@@ -5,7 +5,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 import yfinance as yf
 
 # ==========================================
-# KONFIGURASI SIMULASI BACKTEST
+# KONFIGURASI SIMULASI BACKTEST (V2 - STRICT TREND)
 # ==========================================
 IHSG_ALPHA_BASKET = [
     # --- 100 Saham Sebelumnya (Campuran Blue-chip, Mid-cap, & Likuid) ---
@@ -15,7 +15,7 @@ IHSG_ALPHA_BASKET = [
     "BRIS.JK", "KLBF.JK", "MDKA.JK", "ANTM.JK", "INCO.JK",
     "BREN.JK", "PTRO.JK", "TPIA.JK", "BNBR.JK", "ARTO.JK",
     "CDIA.JK", "BUMI.JK", "BRPT.JK", "CUAN.JK", "TOWR.JK",
-    "BLIB.JK", "UNTR.JK", "AALI.JK", "AUTO.JK", "LSIP.JK",
+    "UNTR.JK", "AALI.JK", "AUTO.JK", "LSIP.JK",
     "BSDE.JK", "INKP.JK", "TKIM.JK", "DSSA.JK", "ADMR.JK",
     "LPKR.JK", "SILO.JK", "MLPL.JK", "AMMN.JK", "CPIN.JK",
     "JPFA.JK", "SIDO.JK", "HMSP.JK", "GGRM.JK", "MYOR.JK",
@@ -40,10 +40,10 @@ IHSG_ALPHA_BASKET = [
     "SOCI.JK", "LEAD.JK", "HOKI.JK", "GOOD.JK", "CLEO.JK",
     "CAMP.JK", "WOOD.JK", "SIMP.JK", "NSSS.JK", "GIAA.JK",
     "SAME.JK", "BMHS.JK", "OMED.JK", "INAF.JK", "PEHA.JK",
-    "CARE.JK", "RALS.JK", "SDRA.JK", "PNLG.JK", "META.JK",
+    "CARE.JK", "RALS.JK", "SDRA.JK", "META.JK",
 
     # --- 50 Saham Tambahan Tahap 2 (Fokus harga di bawah Rp 500) ---
-    "FREN.JK", "CPRO.JK", "BCAP.JK", "IATA.JK", "ACST.JK",
+    "CPRO.JK", "BCAP.JK", "IATA.JK", "ACST.JK",
     "NRCA.JK", "SSIA.JK", "GWSA.JK", "GPRA.JK", "DART.JK",
     "MTLA.JK", "BVIC.JK", "INPC.JK", "BGTG.JK", "MCOR.JK",
     "CFIN.JK", "BIMA.JK", "VRNA.JK", "BWPT.JK", "GZCO.JK",
@@ -68,12 +68,12 @@ IHSG_ALPHA_BASKET = [
 ]
 
 MIN_TURNOVER = 750_000_000  # Rp 750 Juta
-PROB_THRESHOLD = 0.56  # Sinyal Strong Buy jika probabilitas >= 56%
-TRANSACTION_FEE = 0.003  # 0.3% (Slippage + Broker Fee)
-INITIAL_CAPITAL = 100_000_000  # Modal awal simulasi Rp 100 Juta
+MIN_PRICE = 100  # Minimal harga saham Rp 100
+PROB_THRESHOLD = 0.60  # Diperketat ke 60%
+TRANSACTION_FEE = 0.003  # 0.3% Broker Fee + Slippage
 
 print("==================================================")
-print("MEMULAI QUANT BACKTESTING ENGINE (IDX SMART SCREENER)")
+print("RUNNING QUANT BACKTEST V2 (WITH STRICT TREND FILTER)")
 print("==================================================\n")
 
 all_trades = []
@@ -81,7 +81,6 @@ all_trades = []
 
 def run_backtest_on_ticker(ticker):
   try:
-    # 1. Download Data Historis
     df = yf.download(ticker, period="2y", interval="1d", progress=False)
     if df.empty or len(df) < 150:
       return
@@ -89,10 +88,11 @@ def run_backtest_on_ticker(ticker):
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
 
-    # 2. Hitung Fitur & Indikator Teknikal
+    # 1. Target & Fitur Indikator
     df["Target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
     df["SMA_10"] = df.ta.sma(length=10)
     df["SMA_50"] = df.ta.sma(length=50)
+    df["Vol_SMA20"] = df.ta.sma(df["Volume"], length=20)
 
     macd_df = df.ta.macd(fast=12, slow=26, signal=9)
     col_macdh = [c for c in macd_df.columns if "MACDh_" in c][0]
@@ -142,7 +142,7 @@ def run_backtest_on_ticker(ticker):
         "Rolling_Volatility_14",
     ]
 
-    # 3. Walk-Forward Simulation (Testing pada 30% Data Terakhir)
+    # 2. Split Train / Test
     split_idx = int(len(df) * 0.7)
     train_data = df.iloc[:split_idx]
     test_data = df.iloc[split_idx:].copy()
@@ -150,21 +150,19 @@ def run_backtest_on_ticker(ticker):
     X_train, y_train = train_data[fitur], train_data["Target"]
     X_test = test_data[fitur]
 
-    # Train Model
+    # Model Training
     model = HistGradientBoostingClassifier(
         max_iter=150,
-        max_depth=5,
-        learning_rate=0.04,
-        l2_regularization=2.5,
+        max_depth=4,
+        learning_rate=0.03,
+        l2_regularization=3.0,
         random_state=42,
     )
     model.fit(X_train, y_train)
 
-    # Predict Probabilities
-    probs = model.predict_proba(X_test)[:, 1]
-    test_data["Prob_Naik"] = probs
+    test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
 
-    # 4. Simulasi Trade Eksekusi
+    # 3. Eksekusi Simulation dengan STRICT FILTER
     in_trade = False
     entry_price = 0
     tp_price = 0
@@ -174,13 +172,10 @@ def run_backtest_on_ticker(ticker):
     for i in range(len(test_data) - 1):
       row = test_data.iloc[i]
 
-      # Cek jika sedang posisi HOLD
       if in_trade:
         curr_high = test_data.iloc[i + 1]["High"]
         curr_low = test_data.iloc[i + 1]["Low"]
-        curr_close = test_data.iloc[i + 1]["Close"]
 
-        # Hitung Exit
         exit_price = None
         result_type = None
 
@@ -192,7 +187,6 @@ def run_backtest_on_ticker(ticker):
           result_type = "LOSS (SL)"
 
         if exit_price:
-          # Net Return dikurangi Fee & Slippage
           pnl_pct = (
               (exit_price - entry_price) / entry_price
           ) - TRANSACTION_FEE
@@ -207,35 +201,46 @@ def run_backtest_on_ticker(ticker):
           })
           in_trade = False
 
-      # Cek Sinyal Beli Baru
       else:
+        # STRICT FILTER RULE:
+        # 1. Probabilitas >= 60%
+        # 2. Turnover >= 750 Juta
+        # 3. Harga Saham > Rp 100
+        # 4. TREND FILTER: Close > SMA_50 (Saham Wajib Uptrend)
+        # 5. VOLUME FILTER: Volume > Rata-rata Volume 20 Hari
+        is_uptrend = row["Close"] > row["SMA_50"]
+        is_vol_spike = row["Volume"] > row["Vol_SMA20"]
+
         if (
             row["Prob_Naik"] >= PROB_THRESHOLD
             and row["Turnover_5D"] >= MIN_TURNOVER
+            and row["Close"] >= MIN_PRICE
+            and is_uptrend
+            and is_vol_spike
         ):
           in_trade = True
-          entry_price = test_data.iloc[i + 1]["Open"]  # Beli di Open besok
+          entry_price = test_data.iloc[i + 1]["Open"]
           atr = row["ATR_Raw"]
-          tp_price = entry_price + (3.0 * atr)
-          sl_price = entry_price - (2.0 * atr)
+          tp_price = entry_price + (2.5 * atr)  # TP disesuaikan 2.5x ATR
+          sl_price = entry_price - (1.5 * atr)  # SL disesuaikan 1.5x ATR
           entry_date = test_data.index[i + 1]
 
   except Exception as e:
     pass
 
 
-# Run Backtest ke seluruh Basket
+# Run Engine
 for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   print(
       f"Testing [{idx+1}/{len(IHSG_ALPHA_BASKET)}]: {symbol}...", end="\r"
   )
   run_backtest_on_ticker(symbol)
 
-print("\n\n ================= EVALUASI KINERJA BACKTEST =================")
+print("\n\n ================= EVALUASI KINERJA BACKTEST V2 =================")
 trades_df = pd.DataFrame(all_trades)
 
 if trades_df.empty:
-  print("Tidak ada transaksi yang terjadi selama periode simulasi.")
+  print("Tidak ada sinyal yang memenuhi kriteria filter ketat.")
 else:
   total_trades = len(trades_df)
   wins = trades_df[trades_df["PnL_Pct"] > 0]
@@ -251,7 +256,6 @@ else:
       (gross_profit / gross_loss) if gross_loss != 0 else np.nan
   )
 
-  # Hitung Cumulative Return & Max Drawdown
   trades_df["Cumulative"] = (1 + trades_df["PnL_Pct"]).cumprod()
   peak = trades_df["Cumulative"].cummax()
   drawdown = (trades_df["Cumulative"] - peak) / peak
@@ -268,11 +272,12 @@ else:
   print(f"Maximum Drawdown (MaxDD): {max_drawdown:.2f}%")
   print("=================================================================\n")
 
-  print("TOP 5 TRANSAKSI PALING CUAN:")
-  print(
-      trades_df.sort_values(by="PnL_Pct", ascending=False)[
-          ["Ticker", "Entry_Date", "PnL_Pct", "Result"]
-      ]
-      .head(5)
-      .to_string(index=False)
-  )
+  if not wins.empty:
+    print("TOP 5 TRANSAKSI PALING CUAN:")
+    print(
+        trades_df.sort_values(by="PnL_Pct", ascending=False)[
+            ["Ticker", "Entry_Date", "PnL_Pct", "Result"]
+        ]
+        .head(5)
+        .to_string(index=False)
+    )

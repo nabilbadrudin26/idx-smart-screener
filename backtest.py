@@ -68,12 +68,12 @@ IHSG_ALPHA_BASKET = [
 ]
 
 MIN_TURNOVER = 750_000_000  # Rp 750 Juta
-MIN_PRICE = 100  # Minimal harga Rp 100
-TRANSACTION_FEE = 0.003  # Broker Fee + Slippage (0.3%)
-MAX_HOLD_DAYS = 5  # Maksimal simpan 5 hari bursa (Sesuai horizon prediksi ML)
+MIN_PRICE = 100  # Minimum harga Rp 100
+TRANSACTION_FEE = 0.003  # Fee & Slippage 0.3%
+MAX_HOLD_DAYS = 5  # Maksimal simpan 5 hari bursa
 
 print("==================================================")
-print("RUNNING QUANT BACKTEST V5 (SYNCHRONIZED HORIZON)")
+print("🚀 RUNNING QUANT BACKTEST V6 (CALIBRATED QUANT ENGINE)")
 print("==================================================\n")
 
 all_trades = []
@@ -88,14 +88,12 @@ def run_backtest_on_ticker(ticker):
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
 
-    # 1. PERBAIKAN TARGET: Prediksi apakah 3 hari ke depan naik >= 2.0%
-    future_return_3d = (df["Close"].shift(-3) - df["Close"]) / df["Close"]
-    df["Target"] = (future_return_3d >= 0.020).astype(int)
+    # 1. TARGET BINER SEIMBANG: Prediksi apakah Close 3 hari ke depan > Close saat ini
+    df["Target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
 
-    # Indikator Teknikal & Feature Engineering
+    # Indikator Teknikal
     df["SMA_20"] = df.ta.sma(length=20)
     df["SMA_50"] = df.ta.sma(length=50)
-    df["Vol_SMA20"] = df.ta.sma(df["Volume"], length=20)
 
     macd_df = df.ta.macd(fast=12, slow=26, signal=9)
     col_macdh = [c for c in macd_df.columns if "MACDh_" in c][0]
@@ -154,22 +152,22 @@ def run_backtest_on_ticker(ticker):
     X_train, y_train = train_data[fitur], train_data["Target"]
     X_test = test_data[fitur]
 
-    # Model Learning dengan Regularisasi Lebih Kuat
+    # Model Learning
     model = HistGradientBoostingClassifier(
         max_iter=100,
         max_depth=3,
-        learning_rate=0.02,
-        l2_regularization=5.0,
+        learning_rate=0.03,
+        l2_regularization=3.0,
         random_state=42,
     )
     model.fit(X_train, y_train)
 
     test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
 
-    # Cutoff Probabilitas Top 20%
-    prob_cutoff = max(0.51, test_data["Prob_Naik"].quantile(0.80))
+    # DYNAMIC CUTOFF: Mengambil Top 20% Sinyal Tertinggi AI Tanpa Lock Floor
+    prob_cutoff = test_data["Prob_Naik"].quantile(0.80)
 
-    # 3. Eksekusi Simulasi Trading
+    # 3. Eksekusi Trading
     in_trade = False
     entry_price = 0
     tp_price = 0
@@ -216,30 +214,25 @@ def run_backtest_on_ticker(ticker):
           days_in_trade = 0
 
       else:
-        # STRUKTUR ENTRY V5:
-        # 1. Probabilitas AI masuk Top 20%
-        # 2. Golden Alignment: Close > SMA_20 AND SMA_20 > SMA_50
-        # 3. RSI Sehat: antara 45 - 70 (Bukan Overbought Parah)
-        # 4. Turnover >= Rp 750 Juta & Harga >= Rp 100
-        is_golden_trend = (row["Close"] > row["SMA_20"]) and (
-            row["SMA_20"] > row["SMA_50"]
-        )
-        is_rsi_healthy = 45 <= row["RSI_14"] <= 70
+        # LOGIKA ENTRY V6:
+        # 1. Probabilitas berada pada Top 20% Sinyal AI
+        # 2. Fitur Trend: Harga di atas SMA 20 (Uptrend Jangka Pendek)
+        # 3. Likuiditas: Turnover >= Rp 750 Juta & Harga >= Rp 100
+        is_uptrend = row["Close"] > row["SMA_20"]
 
         if (
             row["Prob_Naik"] >= prob_cutoff
             and row["Turnover_5D"] >= MIN_TURNOVER
             and row["Close"] >= MIN_PRICE
-            and is_golden_trend
-            and is_rsi_healthy
+            and is_uptrend
         ):
           in_trade = True
           entry_price = test_data.iloc[i + 1]["Open"]
           atr = row["ATR_Raw"]
 
-          # TP 1.8x ATR vs SL 1.3x ATR (Napas SL Lebih Longgar)
-          tp_price = entry_price + (1.8 * atr)
-          sl_price = entry_price - (1.3 * atr)
+          # TP 1.5x ATR vs SL 1.0x ATR (Risk-Reward 1.5 : 1)
+          tp_price = entry_price + (1.5 * atr)
+          sl_price = entry_price - (1.0 * atr)
           entry_date = test_data.index[i + 1]
           days_in_trade = 0
 
@@ -254,11 +247,11 @@ for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   )
   run_backtest_on_ticker(symbol)
 
-print("\n\n ================= EVALUASI KINERJA BACKTEST V5 =================")
+print("\n\n📊 ================= EVALUASI KINERJA BACKTEST V6 =================")
 trades_df = pd.DataFrame(all_trades)
 
 if trades_df.empty:
-  print("Tidak ada sinyal yang memenuhi kriteria filter.")
+  print("🚨 Tidak ada sinyal yang memenuhi kriteria filter.")
 else:
   total_trades = len(trades_df)
   wins = trades_df[trades_df["PnL_Pct"] > 0]
@@ -291,7 +284,7 @@ else:
   print("=================================================================\n")
 
   if not wins.empty:
-    print("TOP 5 TRANSAKSI PALING CUAN:")
+    print("🏆 TOP 5 TRANSAKSI PALING CUAN:")
     print(
         trades_df.sort_values(by="PnL_Pct", ascending=False)[
             ["Ticker", "Entry_Date", "PnL_Pct", "Result"]

@@ -5,7 +5,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 import yfinance as yf
 
 # ==========================================
-# KONFIGURASI SIMULASI BACKTEST (V2 - STRICT TREND)
+# KONFIGURASI SIMULASI BACKTEST (V3 - BALANCED QUANT)
 # ==========================================
 IHSG_ALPHA_BASKET = [
     # --- 100 Saham Sebelumnya (Campuran Blue-chip, Mid-cap, & Likuid) ---
@@ -67,13 +67,14 @@ IHSG_ALPHA_BASKET = [
     "PYFA.JK", "INRU.JK", "SUNI.JK", "TOBA.JK", "BFIN.JK"
 ]
 
-MIN_TURNOVER = 750_000_000  # Rp 750 Juta
-MIN_PRICE = 100  # Minimal harga saham Rp 100
-PROB_THRESHOLD = 0.60  # Diperketat ke 60%
-TRANSACTION_FEE = 0.003  # 0.3% Broker Fee + Slippage
+MIN_TURNOVER = 750_000_000  # Minimum Turnover Rp 750 Juta
+MIN_PRICE = 100  # Minimum harga saham Rp 100
+PROB_THRESHOLD = 0.54  # Adjusted probabilitas threshold (54%)
+TRANSACTION_FEE = 0.003  # Total Fee & Slippage 0.3%
+MAX_HOLD_DAYS = 10  # Maksimal simpan posisi 10 hari bursa
 
 print("==================================================")
-print("RUNNING QUANT BACKTEST V2 (WITH STRICT TREND FILTER)")
+print("RUNNING QUANT BACKTEST V3 (OPTIMIZED SIGNAL ENGINE)")
 print("==================================================\n")
 
 all_trades = []
@@ -88,7 +89,7 @@ def run_backtest_on_ticker(ticker):
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
 
-    # 1. Target & Fitur Indikator
+    # 1. Target & Fitur Indikator Teknikal
     df["Target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
     df["SMA_10"] = df.ta.sma(length=10)
     df["SMA_50"] = df.ta.sma(length=50)
@@ -142,7 +143,7 @@ def run_backtest_on_ticker(ticker):
         "Rolling_Volatility_14",
     ]
 
-    # 2. Split Train / Test
+    # 2. Split Data (70% Training / 30% Testing Out-of-Sample)
     split_idx = int(len(df) * 0.7)
     train_data = df.iloc[:split_idx]
     test_data = df.iloc[split_idx:].copy()
@@ -150,41 +151,48 @@ def run_backtest_on_ticker(ticker):
     X_train, y_train = train_data[fitur], train_data["Target"]
     X_test = test_data[fitur]
 
-    # Model Training
+    # Fit Model
     model = HistGradientBoostingClassifier(
-        max_iter=150,
+        max_iter=120,
         max_depth=4,
         learning_rate=0.03,
-        l2_regularization=3.0,
+        l2_regularization=2.0,
         random_state=42,
     )
     model.fit(X_train, y_train)
 
     test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
 
-    # 3. Eksekusi Simulation dengan STRICT FILTER
+    # 3. Simulasi Eksekusi Trading
     in_trade = False
     entry_price = 0
     tp_price = 0
     sl_price = 0
     entry_date = None
+    days_in_trade = 0
 
     for i in range(len(test_data) - 1):
       row = test_data.iloc[i]
 
       if in_trade:
+        days_in_trade += 1
         curr_high = test_data.iloc[i + 1]["High"]
         curr_low = test_data.iloc[i + 1]["Low"]
+        curr_close = test_data.iloc[i + 1]["Close"]
 
         exit_price = None
         result_type = None
 
+        # Cek Target Profit & Stop Loss
         if curr_high >= tp_price:
           exit_price = tp_price
           result_type = "WIN (TP)"
         elif curr_low <= sl_price:
           exit_price = sl_price
           result_type = "LOSS (SL)"
+        elif days_in_trade >= MAX_HOLD_DAYS:  # Exit Waktu (Time-based exit)
+          exit_price = curr_close
+          result_type = "TIME EXIT"
 
         if exit_price:
           pnl_pct = (
@@ -200,47 +208,51 @@ def run_backtest_on_ticker(ticker):
               "Result": result_type,
           })
           in_trade = False
+          days_in_trade = 0
 
       else:
-        # STRICT FILTER RULE:
-        # 1. Probabilitas >= 60%
-        # 2. Turnover >= 750 Juta
-        # 3. Harga Saham > Rp 100
-        # 4. TREND FILTER: Close > SMA_50 (Saham Wajib Uptrend)
-        # 5. VOLUME FILTER: Volume > Rata-rata Volume 20 Hari
+        # LOGIKA FILTER ENTRY:
+        # 1. Probabilitas Model >= 54%
+        # 2. Turnover >= Rp 750 Juta
+        # 3. Harga Saham >= Rp 100
+        # 4. TREND FILTER: Close > SMA_50 (Mencegah tangkap pisau jatuh)
+        # 5. VOLUME FILTER: Volume >= 80% dari SMA Volume 20 Hari
         is_uptrend = row["Close"] > row["SMA_50"]
-        is_vol_spike = row["Volume"] > row["Vol_SMA20"]
+        is_vol_ok = row["Volume"] >= (0.8 * row["Vol_SMA20"])
 
         if (
             row["Prob_Naik"] >= PROB_THRESHOLD
             and row["Turnover_5D"] >= MIN_TURNOVER
             and row["Close"] >= MIN_PRICE
             and is_uptrend
-            and is_vol_spike
+            and is_vol_ok
         ):
           in_trade = True
           entry_price = test_data.iloc[i + 1]["Open"]
           atr = row["ATR_Raw"]
-          tp_price = entry_price + (2.5 * atr)  # TP disesuaikan 2.5x ATR
-          sl_price = entry_price - (1.5 * atr)  # SL disesuaikan 1.5x ATR
+
+          # Risk-Reward 2 : 1 (TP 2.0x ATR vs SL 1.0x ATR)
+          tp_price = entry_price + (2.0 * atr)
+          sl_price = entry_price - (1.0 * atr)
           entry_date = test_data.index[i + 1]
+          days_in_trade = 0
 
   except Exception as e:
     pass
 
 
-# Run Engine
+# Jalankan Engine Backtest
 for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   print(
       f"Testing [{idx+1}/{len(IHSG_ALPHA_BASKET)}]: {symbol}...", end="\r"
   )
   run_backtest_on_ticker(symbol)
 
-print("\n\n ================= EVALUASI KINERJA BACKTEST V2 =================")
+print("\n\n ================= EVALUASI KINERJA BACKTEST V3 =================")
 trades_df = pd.DataFrame(all_trades)
 
 if trades_df.empty:
-  print("Tidak ada sinyal yang memenuhi kriteria filter ketat.")
+  print("Tidak ada sinyal yang memenuhi kriteria filter.")
 else:
   total_trades = len(trades_df)
   wins = trades_df[trades_df["PnL_Pct"] > 0]

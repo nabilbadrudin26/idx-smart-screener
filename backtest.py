@@ -5,7 +5,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 import yfinance as yf
 
 # ==========================================
-# KONFIGURASI BACKTEST V8 (BALANCED ALPHA ENGINE)
+# KONFIGURASI BACKTEST V9 (INSTITUTIONAL BREAKEVEN ENGINE)
 # ==========================================
 IHSG_ALPHA_BASKET = [
     # --- 100 Saham Sebelumnya (Campuran Blue-chip, Mid-cap, & Likuid) ---
@@ -67,13 +67,14 @@ IHSG_ALPHA_BASKET = [
     "PYFA.JK", "INRU.JK", "SUNI.JK", "TOBA.JK", "BFIN.JK"
 ]
 
-MIN_TURNOVER = 750_000_000  # Minimal Turnover Rp 750 Juta
-MIN_PRICE = 100  # Minimal harga Rp 100
+MIN_TURNOVER = 2_000_000_000  # Minimal Turnover Rp 2 Miliar (Filter Saham Likuid)
+MIN_PRICE = 200  # Minimal harga Rp 200 (Eliminasi Saham Penny / Penny Stocks)
 TRANSACTION_FEE = 0.003  # Fee & Slippage 0.3%
 MAX_HOLD_DAYS = 5  # Maksimal simpan 5 hari bursa
+PROB_THRESHOLD = 0.53  # Target Confidence AI Minimal 53%
 
 print("==================================================")
-print("🚀 RUNNING QUANT BACKTEST V8 (BALANCED ALPHA ENGINE)")
+print("🚀 RUNNING QUANT BACKTEST V9 (INSTITUTIONAL BREAKEVEN ENGINE)")
 print("==================================================\n")
 
 all_trades = []
@@ -88,10 +89,10 @@ def run_backtest_on_ticker(ticker):
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
 
-    # 1. Target Biner Seimbang Horizon 5 Hari
+    # 1. Target Biner 5 Hari Horizon
     df["Target"] = (df["Close"].shift(-5) > df["Close"]).astype(int)
 
-    # Indikator Teknikal & Fitur
+    # Indikator Teknikal
     df["SMA_20"] = df.ta.sma(length=20)
     df["SMA_50"] = df.ta.sma(length=50)
 
@@ -154,24 +155,22 @@ def run_backtest_on_ticker(ticker):
 
     # Model Training
     model = HistGradientBoostingClassifier(
-        max_iter=100,
+        max_iter=120,
         max_depth=3,
-        learning_rate=0.03,
-        l2_regularization=3.0,
+        learning_rate=0.02,
+        l2_regularization=4.0,
         random_state=42,
     )
     model.fit(X_train, y_train)
 
     test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
 
-    # SELEKSI OPTIMAL: Top 15% Sinyal AI (Quantile 0.85)
-    prob_cutoff = test_data["Prob_Naik"].quantile(0.85)
-
     # 3. Eksekusi Trading
     in_trade = False
     entry_price = 0
     tp_price = 0
     sl_price = 0
+    initial_atr = 0
     entry_date = None
     days_in_trade = 0
 
@@ -184,6 +183,10 @@ def run_backtest_on_ticker(ticker):
         curr_low = test_data.iloc[i + 1]["Low"]
         curr_close = test_data.iloc[i + 1]["Close"]
 
+        # MEKANISME BREAKEVEN: Jika running profit >= 1.0x ATR, geser SL ke harga Entry + Fee
+        if curr_high >= (entry_price + (1.0 * initial_atr)):
+          sl_price = max(sl_price, entry_price * (1 + TRANSACTION_FEE))
+
         exit_price = None
         result_type = None
 
@@ -192,7 +195,7 @@ def run_backtest_on_ticker(ticker):
           result_type = "WIN (TP)"
         elif curr_low <= sl_price:
           exit_price = sl_price
-          result_type = "LOSS (SL)"
+          result_type = "LOSS / BE (SL)"
         elif days_in_trade >= MAX_HOLD_DAYS:  # Time-based Exit di Hari ke-5
           exit_price = curr_close
           result_type = "TIME EXIT"
@@ -214,25 +217,30 @@ def run_backtest_on_ticker(ticker):
           days_in_trade = 0
 
       else:
-        # STRUKTUR ENTRY V8:
-        # 1. Skor AI di Top 15% (Quantile 85)
-        # 2. Structure Filter: Close > SMA 20 (Short-term Uptrend)
-        # 3. Liquidity: Turnover >= Rp 750 Juta & Harga >= Rp 100
-        is_uptrend = row["Close"] > row["SMA_20"]
+        # STRUKTUR ENTRY V9:
+        # 1. AI Probability >= 53%
+        # 2. Strong Alignment: Close > SMA 20 DAN SMA 20 > SMA 50
+        # 3. Momentum Check: RSI > 50 (Bukan oversold yang sedang pendarahan)
+        # 4. Liquidity Protection: Turnover >= Rp 2 Miliar & Harga >= Rp 200
+        is_strong_trend = (row["Close"] > row["SMA_20"]) and (
+            row["SMA_20"] > row["SMA_50"]
+        )
+        is_rsi_bullish = row["RSI_14"] > 50
 
         if (
-            row["Prob_Naik"] >= prob_cutoff
+            row["Prob_Naik"] >= PROB_THRESHOLD
             and row["Turnover_5D"] >= MIN_TURNOVER
             and row["Close"] >= MIN_PRICE
-            and is_uptrend
+            and is_strong_trend
+            and is_rsi_bullish
         ):
           in_trade = True
           entry_price = test_data.iloc[i + 1]["Open"]
-          atr = row["ATR_Raw"]
+          initial_atr = row["ATR_Raw"]
 
-          # RS 2.0 : 1 (TP 2.0x ATR vs SL 1.0x ATR)
-          tp_price = entry_price + (2.0 * atr)
-          sl_price = entry_price - (1.0 * atr)
+          # RS 2.5 : 1 (TP 2.5x ATR vs SL 1.0x ATR)
+          tp_price = entry_price + (2.5 * initial_atr)
+          sl_price = entry_price - (1.0 * initial_atr)
           entry_date = test_data.index[i + 1]
           days_in_trade = 0
 
@@ -247,7 +255,7 @@ for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   )
   run_backtest_on_ticker(symbol)
 
-print("\n\n📊 ================= EVALUASI KINERJA BACKTEST V8 =================")
+print("\n\n📊 ================= EVALUASI KINERJA BACKTEST V9 =================")
 trades_df = pd.DataFrame(all_trades)
 
 if trades_df.empty:

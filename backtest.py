@@ -5,7 +5,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 import yfinance as yf
 
 # ==========================================
-# KONFIGURASI SIMULASI BACKTEST V5 (SYNCHRONIZED HORIZON)
+# KONFIGURASI BACKTEST V7 (HIGH CONVICTION ALPHA)
 # ==========================================
 IHSG_ALPHA_BASKET = [
     # --- 100 Saham Sebelumnya (Campuran Blue-chip, Mid-cap, & Likuid) ---
@@ -67,13 +67,13 @@ IHSG_ALPHA_BASKET = [
     "PYFA.JK", "INRU.JK", "SUNI.JK", "TOBA.JK", "BFIN.JK"
 ]
 
-MIN_TURNOVER = 750_000_000  # Rp 750 Juta
+MIN_TURNOVER = 1_000_000_000  # Dinaikkan ke Rp 1 Miliar (Filter Saham Sangat Likuid)
 MIN_PRICE = 100  # Minimum harga Rp 100
 TRANSACTION_FEE = 0.003  # Fee & Slippage 0.3%
-MAX_HOLD_DAYS = 5  # Maksimal simpan 5 hari bursa
+MAX_HOLD_DAYS = 7  # Maksimal simpan 7 hari bursa
 
 print("==================================================")
-print("🚀 RUNNING QUANT BACKTEST V6 (CALIBRATED QUANT ENGINE)")
+print("🚀 RUNNING QUANT BACKTEST V7 (HIGH CONVICTION ALPHA ENGINE)")
 print("==================================================\n")
 
 all_trades = []
@@ -88,12 +88,14 @@ def run_backtest_on_ticker(ticker):
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
 
-    # 1. TARGET BINER SEIMBANG: Prediksi apakah Close 3 hari ke depan > Close saat ini
-    df["Target"] = (df["Close"].shift(-3) > df["Close"]).astype(int)
+    # 1. Target 5 Hari Horizon (Swing Momentum)
+    future_return_5d = (df["Close"].shift(-5) - df["Close"]) / df["Close"]
+    df["Target"] = (future_return_5d >= 0.025).astype(int)
 
     # Indikator Teknikal
     df["SMA_20"] = df.ta.sma(length=20)
     df["SMA_50"] = df.ta.sma(length=50)
+    df["Vol_SMA20"] = df.ta.sma(df["Volume"], length=20)
 
     macd_df = df.ta.macd(fast=12, slow=26, signal=9)
     col_macdh = [c for c in macd_df.columns if "MACDh_" in c][0]
@@ -152,26 +154,27 @@ def run_backtest_on_ticker(ticker):
     X_train, y_train = train_data[fitur], train_data["Target"]
     X_test = test_data[fitur]
 
-    # Model Learning
+    # Model Learning dengan Regularisasi Ketat
     model = HistGradientBoostingClassifier(
-        max_iter=100,
+        max_iter=120,
         max_depth=3,
-        learning_rate=0.03,
-        l2_regularization=3.0,
+        learning_rate=0.02,
+        l2_regularization=5.0,
         random_state=42,
     )
     model.fit(X_train, y_train)
 
     test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
 
-    # DYNAMIC CUTOFF: Mengambil Top 20% Sinyal Tertinggi AI Tanpa Lock Floor
-    prob_cutoff = test_data["Prob_Naik"].quantile(0.80)
+    # STRICT CUTOFF: Hanya ambil Top 10% Sinyal AI Terkuat (Quantile 90%)
+    prob_cutoff = test_data["Prob_Naik"].quantile(0.90)
 
-    # 3. Eksekusi Trading
+    # 3. Eksekusi Trading dengan Dynamic Trailing Stop
     in_trade = False
     entry_price = 0
     tp_price = 0
     sl_price = 0
+    max_price_seen = 0
     entry_date = None
     days_in_trade = 0
 
@@ -184,16 +187,21 @@ def run_backtest_on_ticker(ticker):
         curr_low = test_data.iloc[i + 1]["Low"]
         curr_close = test_data.iloc[i + 1]["Close"]
 
+        # Dynamic Trailing Stop Protection
+        max_price_seen = max(max_price_seen, curr_high)
+        trailing_sl = max_price_seen - (1.2 * atr)
+        effective_sl = max(sl_price, trailing_sl)
+
         exit_price = None
         result_type = None
 
         if curr_high >= tp_price:
           exit_price = tp_price
           result_type = "WIN (TP)"
-        elif curr_low <= sl_price:
-          exit_price = sl_price
-          result_type = "LOSS (SL)"
-        elif days_in_trade >= MAX_HOLD_DAYS:  # Exit Waktu di Hari ke-5
+        elif curr_low <= effective_sl:
+          exit_price = effective_sl
+          result_type = "LOSS (SL/TS)"
+        elif days_in_trade >= MAX_HOLD_DAYS:
           exit_price = curr_close
           result_type = "TIME EXIT"
 
@@ -214,24 +222,30 @@ def run_backtest_on_ticker(ticker):
           days_in_trade = 0
 
       else:
-        # LOGIKA ENTRY V6:
-        # 1. Probabilitas berada pada Top 20% Sinyal AI
-        # 2. Fitur Trend: Harga di atas SMA 20 (Uptrend Jangka Pendek)
-        # 3. Likuiditas: Turnover >= Rp 750 Juta & Harga >= Rp 100
-        is_uptrend = row["Close"] > row["SMA_20"]
+        # SYARAT ENTRY V7:
+        # 1. AI Probability di Top 10% Sinyal Terkuat
+        # 2. Structure Uptrend: Close > SMA 20 DAN SMA 20 > SMA 50
+        # 3. Volume Expansion: Volume Hari ini >= Volume SMA 20
+        # 4. Turnover >= Rp 1 Miliar & Harga >= Rp 100
+        is_uptrend = (row["Close"] > row["SMA_20"]) and (
+            row["SMA_20"] > row["SMA_50"]
+        )
+        is_vol_surge = row["Volume"] >= row["Vol_SMA20"]
 
         if (
             row["Prob_Naik"] >= prob_cutoff
             and row["Turnover_5D"] >= MIN_TURNOVER
             and row["Close"] >= MIN_PRICE
             and is_uptrend
+            and is_vol_surge
         ):
           in_trade = True
           entry_price = test_data.iloc[i + 1]["Open"]
           atr = row["ATR_Raw"]
+          max_price_seen = entry_price
 
-          # TP 1.5x ATR vs SL 1.0x ATR (Risk-Reward 1.5 : 1)
-          tp_price = entry_price + (1.5 * atr)
+          # RASIO RS 2.2 : 1 (TP 2.2x ATR vs SL 1.0x ATR)
+          tp_price = entry_price + (2.2 * atr)
           sl_price = entry_price - (1.0 * atr)
           entry_date = test_data.index[i + 1]
           days_in_trade = 0
@@ -247,7 +261,7 @@ for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   )
   run_backtest_on_ticker(symbol)
 
-print("\n\n📊 ================= EVALUASI KINERJA BACKTEST V6 =================")
+print("\n\n📊 ================= EVALUASI KINERJA BACKTEST V7 =================")
 trades_df = pd.DataFrame(all_trades)
 
 if trades_df.empty:

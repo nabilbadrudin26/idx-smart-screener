@@ -5,7 +5,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 import yfinance as yf
 
 # ==========================================
-# KONFIGURASI BACKTEST V11 (TREND-FOLLOWING ENGINE)
+# KONFIGURASI BACKTEST V12 (ROBUST MACRO ENGINE)
 # ==========================================
 IHSG_ALPHA_BASKET = [
     # --- 100 Saham Sebelumnya (Campuran Blue-chip, Mid-cap, & Likuid) ---
@@ -67,23 +67,27 @@ IHSG_ALPHA_BASKET = [
     "PYFA.JK", "INRU.JK", "SUNI.JK", "TOBA.JK", "BFIN.JK"
 ]
 
-MIN_TURNOVER = 3_000_000_000  # Minimal Turnover Rp 3 Miliar
-MIN_PRICE = 300  # Minimal harga Rp 300
-TRANSACTION_FEE = 0.003  # Fee & Slippage 0.3%
-MAX_HOLD_DAYS = 10  # Diperpanjang ke 10 hari agar tren bisa berkembang
+MIN_TURNOVER = 2_500_000_000  # Minimal Turnover Rp 2.5 Miliar
+MIN_PRICE = 250  # Minimal harga Rp 250
+TRANSACTION_FEE = 0.003  # Biaya Transaksi & Slippage 0.3%
+MAX_HOLD_DAYS = 7  # Simpan maksimal 7 hari bursa
 
 print("==================================================")
-print("🚀 RUNNING QUANT BACKTEST V11 (TREND-FOLLOWING ENGINE)")
+print("🚀 RUNNING QUANT BACKTEST V12 (ROBUST MACRO ENGINE)")
 print("==================================================\n")
 
-# 1. DOWNLOAD DATA IHSG (MACRO REGIME FILTER)
-print("📥 Fetching Data IHSG Index (^JKSE)...")
+# 1. DOWNLOAD & CLEAN DATA IHSG INDEX
+print("📥 Fetching & Processing Data IHSG Index (^JKSE)...")
 ihsg_data = yf.download("^JKSE", period="2y", interval="1d", progress=False)
 if isinstance(ihsg_data.columns, pd.MultiIndex):
   ihsg_data.columns = ihsg_data.columns.get_level_values(0)
 
+ihsg_data.index = ihsg_data.index.tz_localize(None)
 ihsg_sma50 = ihsg_data.ta.sma(length=50)
-ihsg_bullish_dates = set(ihsg_data[ihsg_data["Close"] > ihsg_sma50].index)
+ihsg_status = pd.DataFrame(
+    {"IHSG_Bullish": (ihsg_data["Close"] > ihsg_sma50).astype(int)},
+    index=ihsg_data.index,
+)
 
 all_trades = []
 
@@ -97,17 +101,21 @@ def run_backtest_on_ticker(ticker):
     if isinstance(df.columns, pd.MultiIndex):
       df.columns = df.columns.get_level_values(0)
 
+    # Hilangkan timezone untuk sinkronisasi sempurna dengan IHSG
+    df.index = df.index.tz_localize(None)
+    df = df.join(ihsg_status, how="left")
+    df["IHSG_Bullish"] = df["IHSG_Bullish"].ffill().fillna(0)
+
     df["SMA_20"] = df.ta.sma(length=20)
     df["SMA_50"] = df.ta.sma(length=50)
-    df["Vol_SMA20"] = df.ta.sma(df["Volume"], length=20)
 
     df["Norm_ATR"] = df.ta.atr(length=14) / df["Close"]
     df["ATR_Raw"] = df.ta.atr(length=14)
 
-    # TARGET AI: Saham yang mampu naik minimal +2.0x ATR dalam 5 hari
+    # Target AI: Kenaikan +1.8x ATR dalam 5 hari
     future_max_high = df["High"].shift(-5).rolling(5).max()
     df["Target"] = (
-        (future_max_high - df["Close"]) >= (2.0 * df["ATR_Raw"])
+        (future_max_high - df["Close"]) >= (1.8 * df["ATR_Raw"])
     ).astype(int)
 
     macd_df = df.ta.macd(fast=12, slow=26, signal=9)
@@ -174,11 +182,12 @@ def run_backtest_on_ticker(ticker):
     model.fit(X_train, y_train)
 
     test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
-    prob_cutoff = test_data["Prob_Naik"].quantile(0.88)
+    prob_cutoff = test_data["Prob_Naik"].quantile(0.80)
 
     # Eksekusi Trading
     in_trade = False
     entry_price = 0
+    tp_price = 0
     sl_price = 0
     max_price_seen = 0
     entry_date = None
@@ -186,7 +195,6 @@ def run_backtest_on_ticker(ticker):
     atr_at_entry = 0
 
     for i in range(len(test_data) - 1):
-      current_date = test_data.index[i]
       row = test_data.iloc[i]
 
       if in_trade:
@@ -195,15 +203,17 @@ def run_backtest_on_ticker(ticker):
         curr_low = test_data.iloc[i + 1]["Low"]
         curr_close = test_data.iloc[i + 1]["Close"]
 
-        # Dynamic Trailing Stop Management
         max_price_seen = max(max_price_seen, curr_high)
-        trailing_sl = max_price_seen - (1.8 * atr_at_entry)
+        trailing_sl = max_price_seen - (1.5 * atr_at_entry)
         effective_sl = max(sl_price, trailing_sl)
 
         exit_price = None
         result_type = None
 
-        if curr_low <= effective_sl:
+        if curr_high >= tp_price:
+          exit_price = tp_price
+          result_type = "WIN (TP)"
+        elif curr_low <= effective_sl:
           exit_price = effective_sl
           result_type = "WIN (TS)" if exit_price > entry_price else "LOSS (SL)"
         elif days_in_trade >= MAX_HOLD_DAYS:
@@ -227,32 +237,23 @@ def run_backtest_on_ticker(ticker):
           days_in_trade = 0
 
       else:
-        # SYARAT ENTRY V11:
-        # 1. MACRO FILTER: IHSG sedang Bullish (IHSG > SMA 50)
-        # 2. AI Score: Top 12% Sinyal AI Terkuat (Quantile 0.88)
-        # 3. Micro Trend: Close > SMA 20 DAN SMA 20 > SMA 50
-        # 4. Volume Surge: Volume Hari Ini >= Volume SMA 20
-        # 5. Likuiditas: Turnover >= Rp 3 Miliar & Harga >= Rp 300
-        is_ihsg_bullish = current_date in ihsg_bullish_dates
-        is_uptrend = (row["Close"] > row["SMA_20"]) and (
-            row["SMA_20"] > row["SMA_50"]
-        )
-        is_vol_surge = row["Volume"] >= row["Vol_SMA20"]
+        # ATURAN ENTRY V12
+        is_ihsg_bull = row["IHSG_Bullish"] == 1
+        is_uptrend = row["Close"] > row["SMA_20"]
 
         if (
-            is_ihsg_bullish
+            is_ihsg_bull
             and row["Prob_Naik"] >= prob_cutoff
             and row["Turnover_5D"] >= MIN_TURNOVER
             and row["Close"] >= MIN_PRICE
             and is_uptrend
-            and is_vol_surge
         ):
           in_trade = True
           entry_price = test_data.iloc[i + 1]["Open"]
           atr_at_entry = row["ATR_Raw"]
           max_price_seen = entry_price
 
-          # Initial Stop Loss di 1.0x ATR
+          tp_price = entry_price + (2.0 * atr_at_entry)
           sl_price = entry_price - (1.0 * atr_at_entry)
           entry_date = test_data.index[i + 1]
           days_in_trade = 0
@@ -269,7 +270,7 @@ for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   run_backtest_on_ticker(symbol)
 
 print(
-    "\n\n📊 ================= EVALUASI KINERJA BACKTEST V11 ================="
+    "\n\n📊 ================= EVALUASI KINERJA BACKTEST V12 ================="
 )
 trades_df = pd.DataFrame(all_trades)
 

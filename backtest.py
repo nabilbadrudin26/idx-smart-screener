@@ -2,78 +2,277 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 from sklearn.ensemble import HistGradientBoostingClassifier
+import warnings
 import yfinance as yf
 
+warnings.filterwarnings("ignore")
+
 # ==========================================
-# KONFIGURASI BACKTEST V13 (BREAKOUT & STRUCTURAL TREND)
+# KONFIGURASI BACKTEST V13.1 (OPTIMIZED BASKET)
 # ==========================================
 IHSG_ALPHA_BASKET = [
-    # --- 100 Saham Sebelumnya (Campuran Blue-chip, Mid-cap, & Likuid) ---
-    "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "TLKM.JK",
-    "ASII.JK", "UNVR.JK", "ICBP.JK", "INDF.JK", "AMRT.JK",
-    "ADRO.JK", "PTBA.JK", "ITMG.JK", "PGAS.JK", "GOTO.JK",
-    "BRIS.JK", "KLBF.JK", "MDKA.JK", "ANTM.JK", "INCO.JK",
-    "BREN.JK", "PTRO.JK", "TPIA.JK", "BNBR.JK", "ARTO.JK",
-    "CDIA.JK", "BUMI.JK", "BRPT.JK", "CUAN.JK", "TOWR.JK",
-    "UNTR.JK", "AALI.JK", "AUTO.JK", "LSIP.JK",
-    "BSDE.JK", "INKP.JK", "TKIM.JK", "DSSA.JK", "ADMR.JK",
-    "LPKR.JK", "SILO.JK", "MLPL.JK", "AMMN.JK", "CPIN.JK",
-    "JPFA.JK", "SIDO.JK", "HMSP.JK", "GGRM.JK", "MYOR.JK",
-    "ISAT.JK", "EXCL.JK", "MTEL.JK", "BDMN.JK", "BNGA.JK",
-    "BBTN.JK", "NISP.JK", "SMGR.JK", "INTP.JK", "CTRA.JK",
-    "PWON.JK", "SMRA.JK", "JSMR.JK", "MEDC.JK", "AKRA.JK",
-    "HRUM.JK", "BYAN.JK", "MIKA.JK", "HEAL.JK", "ACES.JK",
-    "MAPI.JK", "MAPA.JK", "ERAA.JK", "CMRY.JK", "ULTJ.JK",
-    "ROTI.JK", "TBIG.JK", "BUKA.JK", "EMTK.JK", "SCMA.JK",
-    "MNCN.JK", "SRTG.JK", "MBMA.JK", "NCKL.JK", "PGEO.JK",
-    "KEEN.JK", "PTPP.JK", "WIKA.JK", "ADHI.JK", "WSKT.JK",
-    "ENRG.JK", "PNBN.JK", "BBYB.JK", "WIIM.JK", "KAEF.JK",
-    "WEGE.JK", "HILL.JK", "SMMA.JK", "ASRI.JK", "LPPF.JK",
-
-    # --- 50 Saham Tambahan Tahap 1 (Fokus harga di bawah Rp 500) ---
-    "BRMS.JK", "DOID.JK", "ELSA.JK", "SMDR.JK", "TMAS.JK",
-    "WTON.JK", "PPRE.JK", "APLN.JK", "DILD.JK", "KIJA.JK",
-    "BEST.JK", "BKSL.JK", "MDLN.JK", "TOTL.JK", "AGRO.JK",
-    "BABP.JK", "BKSW.JK", "PNBS.JK", "NOBU.JK", "AMAR.JK",
-    "BBKP.JK", "BMTR.JK", "BHIT.JK", "KPIG.JK", "MARI.JK",
-    "VIVA.JK", "WIRG.JK", "BIPI.JK", "DEWA.JK", "IPCM.JK",
-    "SOCI.JK", "LEAD.JK", "HOKI.JK", "GOOD.JK", "CLEO.JK",
-    "CAMP.JK", "WOOD.JK", "SIMP.JK", "NSSS.JK", "GIAA.JK",
-    "SAME.JK", "BMHS.JK", "OMED.JK", "INAF.JK", "PEHA.JK",
-    "CARE.JK", "RALS.JK", "SDRA.JK", "META.JK",
-
-    # --- 50 Saham Tambahan Tahap 2 (Fokus harga di bawah Rp 500) ---
-    "CPRO.JK", "BCAP.JK", "IATA.JK", "ACST.JK",
-    "NRCA.JK", "SSIA.JK", "GWSA.JK", "GPRA.JK", "DART.JK",
-    "MTLA.JK", "BVIC.JK", "INPC.JK", "BGTG.JK", "MCOR.JK",
-    "CFIN.JK", "BIMA.JK", "VRNA.JK", "BWPT.JK", "GZCO.JK",
-    "PALM.JK", "JAWA.JK", "WMPP.JK", "WMUU.JK", "DSFI.JK",
-    "TRUK.JK", "WEHA.JK", "CMPP.JK", "TAXI.JK", "ABBA.JK",
-    "MSKY.JK", "KBLI.JK", "KBLM.JK", "VOKS.JK", "BAJA.JK",
-    "GDST.JK", "ISSP.JK", "IGAR.JK", "KDSI.JK", "SPMA.JK",
-    "TRST.JK", "ALDO.JK", "POLA.JK", "BSBK.JK", "ZATA.JK",
-    "KRYA.JK", "BPFI.JK", "TRAM.JK", "RIMO.JK", "COWL.JK",
-
-    # --- 50 Saham Tambahan Tahap 3 (Fokus harga di atas Rp 500 dan di bawah Rp 1.000) ---
-    "BJBR.JK", "BJTM.JK", "TINS.JK", "SSMS.JK", "TAPG.JK",
-    "DSNG.JK", "MARK.JK", "RAJA.JK", "ESSA.JK", "AVIA.JK",
-    "TPMA.JK", "ASSA.JK", "MPMX.JK", "GJTL.JK", "IRRA.JK",
-    "BSIM.JK", "BNLI.JK", "ANJT.JK", "CSRA.JK", "TBLA.JK",
-    "MAIN.JK", "LPCK.JK", "JRPT.JK", "PNIN.JK", "MRAT.JK",
-    "CSAP.JK", "SMMT.JK", "BALI.JK", "MTDL.JK", "STAA.JK",
-    "PSSI.JK", "LION.JK", "TFCO.JK", "TIFA.JK", "TUGU.JK",
-    "SPTO.JK", "BTON.JK", "CASA.JK", "ARNA.JK", "RMKE.JK",
-    "POWR.JK", "ASGR.JK", "SGER.JK", "TEBE.JK", "RAAM.JK",
-    "PYFA.JK", "INRU.JK", "SUNI.JK", "TOBA.JK", "BFIN.JK"
+    # --- 100 Saham Utama (Blue-chip, Mid-cap, & Likuid) ---
+    "BBCA.JK",
+    "BBRI.JK",
+    "BMRI.JK",
+    "BBNI.JK",
+    "TLKM.JK",
+    "ASII.JK",
+    "UNVR.JK",
+    "ICBP.JK",
+    "INDF.JK",
+    "AMRT.JK",
+    "ADRO.JK",
+    "PTBA.JK",
+    "ITMG.JK",
+    "PGAS.JK",
+    "GOTO.JK",
+    "BRIS.JK",
+    "KLBF.JK",
+    "MDKA.JK",
+    "ANTM.JK",
+    "INCO.JK",
+    "BREN.JK",
+    "PTRO.JK",
+    "TPIA.JK",
+    "BNBR.JK",
+    "ARTO.JK",
+    "CDIA.JK",
+    "BUMI.JK",
+    "BRPT.JK",
+    "CUAN.JK",
+    "TOWR.JK",
+    "UNTR.JK",
+    "AALI.JK",
+    "AUTO.JK",
+    "LSIP.JK",
+    "BSDE.JK",
+    "INKP.JK",
+    "TKIM.JK",
+    "DSSA.JK",
+    "ADMR.JK",
+    "LPKR.JK",
+    "SILO.JK",
+    "MLPL.JK",
+    "AMMN.JK",
+    "CPIN.JK",
+    "JPFA.JK",
+    "SIDO.JK",
+    "HMSP.JK",
+    "GGRM.JK",
+    "MYOR.JK",
+    "ISAT.JK",
+    "EXCL.JK",
+    "MTEL.JK",
+    "BDMN.JK",
+    "BNGA.JK",
+    "BBTN.JK",
+    "NISP.JK",
+    "SMGR.JK",
+    "INTP.JK",
+    "CTRA.JK",
+    "PWON.JK",
+    "SMRA.JK",
+    "JSMR.JK",
+    "MEDC.JK",
+    "AKRA.JK",
+    "HRUM.JK",
+    "BYAN.JK",
+    "MIKA.JK",
+    "HEAL.JK",
+    "ACES.JK",
+    "MAPI.JK",
+    "MAPA.JK",
+    "ERAA.JK",
+    "CMRY.JK",
+    "ULTJ.JK",
+    "ROTI.JK",
+    "TBIG.JK",
+    "BUKA.JK",
+    "EMTK.JK",
+    "SCMA.JK",
+    "MNCN.JK",
+    "SRTG.JK",
+    "MBMA.JK",
+    "NCKL.JK",
+    "PGEO.JK",
+    "KEEN.JK",
+    "PTPP.JK",
+    "WIKA.JK",
+    "ADHI.JK",
+    "WSKT.JK",
+    "ENRG.JK",
+    "PNBN.JK",
+    "BBYB.JK",
+    "WIIM.JK",
+    "KAEF.JK",
+    "WEGE.JK",
+    "HILL.JK",
+    "SMMA.JK",
+    "ASRI.JK",
+    "LPPF.JK",
+    # --- 50 Saham Tambahan Tahap 1 ---
+    "BRMS.JK",
+    "DOID.JK",
+    "ELSA.JK",
+    "SMDR.JK",
+    "TMAS.JK",
+    "WTON.JK",
+    "PPRE.JK",
+    "APLN.JK",
+    "DILD.JK",
+    "KIJA.JK",
+    "BEST.JK",
+    "BKSL.JK",
+    "MDLN.JK",
+    "TOTL.JK",
+    "AGRO.JK",
+    "BABP.JK",
+    "BKSW.JK",
+    "PNBS.JK",
+    "NOBU.JK",
+    "AMAR.JK",
+    "BBKP.JK",
+    "BMTR.JK",
+    "BHIT.JK",
+    "KPIG.JK",
+    "MARI.JK",
+    "VIVA.JK",
+    "WIRG.JK",
+    "BIPI.JK",
+    "DEWA.JK",
+    "IPCM.JK",
+    "SOCI.JK",
+    "LEAD.JK",
+    "HOKI.JK",
+    "GOOD.JK",
+    "CLEO.JK",
+    "CAMP.JK",
+    "WOOD.JK",
+    "SIMP.JK",
+    "NSSS.JK",
+    "GIAA.JK",
+    "SAME.JK",
+    "BMHS.JK",
+    "OMED.JK",
+    "INAF.JK",
+    "PEHA.JK",
+    "CARE.JK",
+    "RALS.JK",
+    "SDRA.JK",
+    "META.JK",
+    # --- 50 Saham Tambahan Tahap 2 ---
+    "CPRO.JK",
+    "BCAP.JK",
+    "IATA.JK",
+    "ACST.JK",
+    "NRCA.JK",
+    "SSIA.JK",
+    "GWSA.JK",
+    "GPRA.JK",
+    "DART.JK",
+    "MTLA.JK",
+    "BVIC.JK",
+    "INPC.JK",
+    "BGTG.JK",
+    "MCOR.JK",
+    "CFIN.JK",
+    "BIMA.JK",
+    "VRNA.JK",
+    "BWPT.JK",
+    "GZCO.JK",
+    "PALM.JK",
+    "JAWA.JK",
+    "WMPP.JK",
+    "WMUU.JK",
+    "DSFI.JK",
+    "TRUK.JK",
+    "WEHA.JK",
+    "CMPP.JK",
+    "TAXI.JK",
+    "ABBA.JK",
+    "MSKY.JK",
+    "KBLI.JK",
+    "KBLM.JK",
+    "VOKS.JK",
+    "BAJA.JK",
+    "GDST.JK",
+    "ISSP.JK",
+    "IGAR.JK",
+    "KDSI.JK",
+    "SPMA.JK",
+    "TRST.JK",
+    "ALDO.JK",
+    "POLA.JK",
+    "BSBK.JK",
+    "ZATA.JK",
+    "KRYA.JK",
+    "BPFI.JK",
+    "TRAM.JK",
+    "RIMO.JK",
+    "COWL.JK",
+    # --- 50 Saham Tambahan Tahap 3 ---
+    "BJBR.JK",
+    "BJTM.JK",
+    "TINS.JK",
+    "SSMS.JK",
+    "TAPG.JK",
+    "DSNG.JK",
+    "MARK.JK",
+    "RAJA.JK",
+    "ESSA.JK",
+    "AVIA.JK",
+    "TPMA.JK",
+    "ASSA.JK",
+    "MPMX.JK",
+    "GJTL.JK",
+    "IRRA.JK",
+    "BSIM.JK",
+    "BNLI.JK",
+    "ANJT.JK",
+    "CSRA.JK",
+    "TBLA.JK",
+    "MAIN.JK",
+    "LPCK.JK",
+    "JRPT.JK",
+    "PNIN.JK",
+    "MRAT.JK",
+    "CSAP.JK",
+    "SMMT.JK",
+    "BALI.JK",
+    "MTDL.JK",
+    "STAA.JK",
+    "PSSI.JK",
+    "LION.JK",
+    "TFCO.JK",
+    "TIFA.JK",
+    "TUGU.JK",
+    "SPTO.JK",
+    "BTON.JK",
+    "CASA.JK",
+    "ARNA.JK",
+    "RMKE.JK",
+    "POWR.JK",
+    "ASGR.JK",
+    "SGER.JK",
+    "TEBE.JK",
+    "RAAM.JK",
+    "PYFA.JK",
+    "INRU.JK",
+    "SUNI.JK",
+    "TOBA.JK",
+    "BFIN.JK",
 ]
 
-MIN_TURNOVER = 3_000_000_000  # Minimal Turnover Rp 3 Miliar
-MIN_PRICE = 300  # Minimal harga Rp 300
+# Parameter Dikalibrasi (Sweet Spot Execution)
+MIN_TURNOVER = 1_000_000_000  # Dipangkas ke Rp 1 Miliar agar saham mid-small cap terserap
+MIN_PRICE = 100  # Dipangkas ke Rp 100 menyesuaikan saham basket < Rp 500
 TRANSACTION_FEE = 0.003  # Fee & Slippage 0.3%
-MAX_HOLD_DAYS = 8  # Simpan maksimal 8 hari bursa
+MAX_HOLD_DAYS = 10  # Ditingkatkan ke 10 hari bursa (memberi ruang trend berkembang)
 
 print("==================================================")
-print("🚀 RUNNING QUANT BACKTEST V13 (BREAKOUT & STRUCTURAL TREND)")
+print("🚀 RUNNING QUANT BACKTEST V13.1 (CALIBRATED TREND & BREAKOUT)")
+print(f"📦 Total Target Basket: {len(IHSG_ALPHA_BASKET)} Tickers")
 print("==================================================\n")
 
 # 1. DOWNLOAD & CLEAN DATA IHSG INDEX
@@ -95,7 +294,7 @@ all_trades = []
 def run_backtest_on_ticker(ticker):
   try:
     df = yf.download(ticker, period="2y", interval="1d", progress=False)
-    if df.empty or len(df) < 220:  # Membutuhkan minimal 220 bar untuk SMA200
+    if df.empty or len(df) < 100:  # Membutuhkan minimal 100 bar
       return
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -108,28 +307,33 @@ def run_backtest_on_ticker(ticker):
     # Indikator Tren & Volume
     df["SMA_20"] = df.ta.sma(length=20)
     df["SMA_50"] = df.ta.sma(length=50)
-    df["SMA_200"] = df.ta.sma(length=200)
     df["Vol_SMA20"] = df.ta.sma(df["Volume"], length=20)
 
     df["Norm_ATR"] = df.ta.atr(length=14) / df["Close"]
     df["ATR_Raw"] = df.ta.atr(length=14)
 
-    # Highest High 5 hari lalu untuk breakpoint
+    # Level Breakout 5 hari terakhir
     df["High_5D_Max"] = df["High"].shift(1).rolling(5).max()
 
-    # Target AI: Kenaikan +2.5x ATR dalam 5 hari
+    # Target Training AI: Kenaikan +2.0x ATR dalam 5 hari
     future_max_high = df["High"].shift(-5).rolling(5).max()
     df["Target"] = (
-        (future_max_high - df["Close"]) >= (2.5 * df["ATR_Raw"])
+        (future_max_high - df["Close"]) >= (2.0 * df["ATR_Raw"])
     ).astype(int)
 
     macd_df = df.ta.macd(fast=12, slow=26, signal=9)
-    col_macdh = [c for c in macd_df.columns if "MACDh_" in c][0]
-    df["Norm_MACDh"] = macd_df[col_macdh] / df["Close"]
+    if macd_df is not None:
+      col_macdh = [c for c in macd_df.columns if "MACDh_" in c][0]
+      df["Norm_MACDh"] = macd_df[col_macdh] / df["Close"]
+    else:
+      df["Norm_MACDh"] = 0
 
     bb_df = df.ta.bbands(length=20, std=2)
-    col_bbp = [c for c in bb_df.columns if "BBP_" in c][0]
-    df["BBP_20"] = bb_df[col_bbp]
+    if bb_df is not None:
+      col_bbp = [c for c in bb_df.columns if "BBP_" in c][0]
+      df["BBP_20"] = bb_df[col_bbp]
+    else:
+      df["BBP_20"] = 0.5
 
     res_obv = df.ta.obv()
     df["OBV"] = (
@@ -139,7 +343,6 @@ def run_backtest_on_ticker(ticker):
     df["Return_Interval"] = df["Close"].pct_change()
     df["Dist_SMA20"] = (df["Close"] - df["SMA_20"]) / df["SMA_20"]
     df["Dist_SMA50"] = (df["Close"] - df["SMA_50"]) / df["SMA_50"]
-    df["Dist_SMA200"] = (df["Close"] - df["SMA_200"]) / df["SMA_200"]
     df["OBV_EMA_Dist"] = (df["OBV"] - df["OBV"].ewm(span=10).mean()) / (
         df["Volume"] + 1e-8
     )
@@ -155,12 +358,13 @@ def run_backtest_on_ticker(ticker):
     df["Turnover_5D"] = (df["Close"] * df["Volume"]).rolling(5).mean()
 
     df = df.dropna()
+    if len(df) < 50:
+      return
 
     fitur = [
         "Return_Interval",
         "Dist_SMA20",
         "Dist_SMA50",
-        "Dist_SMA200",
         "Norm_MACDh",
         "Norm_ATR",
         "Return_Lag1",
@@ -176,22 +380,29 @@ def run_backtest_on_ticker(ticker):
     train_data = df.iloc[:split_idx]
     test_data = df.iloc[split_idx:].copy()
 
+    if (
+        len(train_data) < 30
+        or len(test_data) < 10
+        or train_data["Target"].nunique() < 2
+    ):
+      return
+
     X_train, y_train = train_data[fitur], train_data["Target"]
     X_test = test_data[fitur]
 
     model = HistGradientBoostingClassifier(
-        max_iter=120,
+        max_iter=100,
         max_depth=3,
         learning_rate=0.03,
-        l2_regularization=4.0,
+        l2_regularization=3.0,
         random_state=42,
     )
     model.fit(X_train, y_train)
 
     test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
 
-    # Filter AI Elit: Ambil Top 10% Sinyal Terkuat (Quantile 0.90)
-    prob_cutoff = test_data["Prob_Naik"].quantile(0.90)
+    # Filter AI: Ambil Top 25% Sinyal Terkuat (Quantile 0.75)
+    prob_cutoff = test_data["Prob_Naik"].quantile(0.75)
 
     # Eksekusi Trading
     in_trade = False
@@ -213,7 +424,8 @@ def run_backtest_on_ticker(ticker):
         curr_close = test_data.iloc[i + 1]["Close"]
 
         max_price_seen = max(max_price_seen, curr_high)
-        trailing_sl = max_price_seen - (1.2 * atr_at_entry)
+        # Trailing SL lebih longgar (1.5x ATR) agar tidak gampang terkena noise
+        trailing_sl = max_price_seen - (1.5 * atr_at_entry)
         effective_sl = max(sl_price, trailing_sl)
 
         exit_price = None
@@ -246,24 +458,24 @@ def run_backtest_on_ticker(ticker):
           days_in_trade = 0
 
       else:
-        # ATURAN ENTRY V13:
+        # ATURAN ENTRY V13.1:
         # 1. Macro Filter: IHSG > SMA50
-        # 2. Structural Bullish: Close > SMA200 DAN SMA20 > SMA50
+        # 2. Medium-Term Trend: Close > SMA50 DAN SMA20 > SMA50
         # 3. Price Breakout: Close >= Level Tertinggi 5 Hari Lalu
-        # 4. Volume Surge: Volume >= 1.3x Volume SMA20
-        # 5. Top AI Sinyal: Prob_Naik >= Quantile 0.90
+        # 4. Volume Surge: Volume >= 1.15x Volume SMA20
+        # 5. Top AI Sinyal: Prob_Naik >= Quantile 0.75
         is_ihsg_bull = row["IHSG_Bullish"] == 1
-        is_structural_uptrend = (row["Close"] > row["SMA_200"]) and (
+        is_trend_ok = (row["Close"] > row["SMA_50"]) and (
             row["SMA_20"] > row["SMA_50"]
         )
         is_breakout = row["Close"] >= row["High_5D_Max"]
-        is_volume_surge = row["Volume"] >= (1.3 * row["Vol_SMA20"])
+        is_volume_ok = row["Volume"] >= (1.15 * row["Vol_SMA20"])
 
         if (
             is_ihsg_bull
-            and is_structural_uptrend
+            and is_trend_ok
             and is_breakout
-            and is_volume_surge
+            and is_volume_ok
             and row["Prob_Naik"] >= prob_cutoff
             and row["Turnover_5D"] >= MIN_TURNOVER
             and row["Close"] >= MIN_PRICE
@@ -273,9 +485,9 @@ def run_backtest_on_ticker(ticker):
           atr_at_entry = row["ATR_Raw"]
           max_price_seen = entry_price
 
-          # RASIO RISK-REWARD 2.5 : 1 (TP 2.5x ATR vs SL 0.8x ATR)
-          tp_price = entry_price + (2.5 * atr_at_entry)
-          sl_price = entry_price - (0.8 * atr_at_entry)
+          # RASIO RISK-REWARD 2.3 : 1 (TP 2.8x ATR vs SL 1.2x ATR)
+          tp_price = entry_price + (2.8 * atr_at_entry)
+          sl_price = entry_price - (1.2 * atr_at_entry)
           entry_date = test_data.index[i + 1]
           days_in_trade = 0
 
@@ -283,7 +495,7 @@ def run_backtest_on_ticker(ticker):
     pass
 
 
-# Jalankan Engine
+# Jalankan Engine Backtest
 for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   print(
       f"⏳ Testing [{idx+1}/{len(IHSG_ALPHA_BASKET)}]: {symbol}...", end="\r"
@@ -291,12 +503,15 @@ for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   run_backtest_on_ticker(symbol)
 
 print(
-    "\n\n📊 ================= EVALUASI KINERJA BACKTEST V13 ================="
+    "\n\n📊 ================= EVALUASI KINERJA BACKTEST V13.1 ================="
 )
 trades_df = pd.DataFrame(all_trades)
 
 if trades_df.empty:
-  print("🚨 Tidak ada sinyal yang memenuhi kriteria filter.")
+  print(
+      "🚨 Tidak ada sinyal yang memenuhi kriteria filter. Coba kurangi"
+      " ketatnya filter."
+  )
 else:
   total_trades = len(trades_df)
   wins = trades_df[trades_df["PnL_Pct"] > 0]

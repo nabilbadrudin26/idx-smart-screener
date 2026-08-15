@@ -8,10 +8,10 @@ import yfinance as yf
 warnings.filterwarnings("ignore")
 
 # ==========================================
-# KONFIGURASI BACKTEST V13.1 (OPTIMIZED BASKET)
+# KONFIGURASI BACKTEST V13.2 (ACTIVE ENGINE)
 # ==========================================
 IHSG_ALPHA_BASKET = [
-    # --- 100 Saham Utama (Blue-chip, Mid-cap, & Likuid) ---
+    # --- 100 Saham Utama ---
     "BBCA.JK",
     "BBRI.JK",
     "BMRI.JK",
@@ -111,7 +111,7 @@ IHSG_ALPHA_BASKET = [
     "SMMA.JK",
     "ASRI.JK",
     "LPPF.JK",
-    # --- 50 Saham Tambahan Tahap 1 ---
+    # --- 50 Saham Tahap 1 ---
     "BRMS.JK",
     "DOID.JK",
     "ELSA.JK",
@@ -161,7 +161,7 @@ IHSG_ALPHA_BASKET = [
     "RALS.JK",
     "SDRA.JK",
     "META.JK",
-    # --- 50 Saham Tambahan Tahap 2 ---
+    # --- 50 Saham Tahap 2 ---
     "CPRO.JK",
     "BCAP.JK",
     "IATA.JK",
@@ -211,7 +211,7 @@ IHSG_ALPHA_BASKET = [
     "TRAM.JK",
     "RIMO.JK",
     "COWL.JK",
-    # --- 50 Saham Tambahan Tahap 3 ---
+    # --- 50 Saham Tahap 3 ---
     "BJBR.JK",
     "BJTM.JK",
     "TINS.JK",
@@ -264,19 +264,17 @@ IHSG_ALPHA_BASKET = [
     "BFIN.JK",
 ]
 
-# Parameter Dikalibrasi (Sweet Spot Execution)
-MIN_TURNOVER = 1_000_000_000  # Dipangkas ke Rp 1 Miliar agar saham mid-small cap terserap
-MIN_PRICE = 100  # Dipangkas ke Rp 100 menyesuaikan saham basket < Rp 500
+MIN_TURNOVER = 500_000_000  # Minimal Turnover Rp 500 Juta
+MIN_PRICE = 50  # Minimal harga Rp 50
 TRANSACTION_FEE = 0.003  # Fee & Slippage 0.3%
-MAX_HOLD_DAYS = 10  # Ditingkatkan ke 10 hari bursa (memberi ruang trend berkembang)
+MAX_HOLD_DAYS = 10  # Maksimal simpan 10 hari bursa
 
 print("==================================================")
-print("🚀 RUNNING QUANT BACKTEST V13.1 (CALIBRATED TREND & BREAKOUT)")
+print("🚀 RUNNING QUANT BACKTEST V13.2 (ACTIVE ENGINE)")
 print(f"📦 Total Target Basket: {len(IHSG_ALPHA_BASKET)} Tickers")
 print("==================================================\n")
 
-# 1. DOWNLOAD & CLEAN DATA IHSG INDEX
-print("📥 Fetching & Processing Data IHSG Index (^JKSE)...")
+# 1. DOWNLOAD IHSG INDEX
 ihsg_data = yf.download("^JKSE", period="2y", interval="1d", progress=False)
 if isinstance(ihsg_data.columns, pd.MultiIndex):
   ihsg_data.columns = ihsg_data.columns.get_level_values(0)
@@ -294,7 +292,7 @@ all_trades = []
 def run_backtest_on_ticker(ticker):
   try:
     df = yf.download(ticker, period="2y", interval="1d", progress=False)
-    if df.empty or len(df) < 100:  # Membutuhkan minimal 100 bar
+    if df.empty or len(df) < 100:
       return
 
     if isinstance(df.columns, pd.MultiIndex):
@@ -304,36 +302,32 @@ def run_backtest_on_ticker(ticker):
     df = df.join(ihsg_status, how="left")
     df["IHSG_Bullish"] = df["IHSG_Bullish"].ffill().fillna(0)
 
-    # Indikator Tren & Volume
+    # Technical Features
     df["SMA_20"] = df.ta.sma(length=20)
     df["SMA_50"] = df.ta.sma(length=50)
     df["Vol_SMA20"] = df.ta.sma(df["Volume"], length=20)
-
     df["Norm_ATR"] = df.ta.atr(length=14) / df["Close"]
     df["ATR_Raw"] = df.ta.atr(length=14)
 
-    # Level Breakout 5 hari terakhir
-    df["High_5D_Max"] = df["High"].shift(1).rolling(5).max()
-
-    # Target Training AI: Kenaikan +2.0x ATR dalam 5 hari
+    # Target AI: Kenaikan +1.8x ATR dalam 5 hari
     future_max_high = df["High"].shift(-5).rolling(5).max()
     df["Target"] = (
-        (future_max_high - df["Close"]) >= (2.0 * df["ATR_Raw"])
+        (future_max_high - df["Close"]) >= (1.8 * df["ATR_Raw"])
     ).astype(int)
 
     macd_df = df.ta.macd(fast=12, slow=26, signal=9)
-    if macd_df is not None:
-      col_macdh = [c for c in macd_df.columns if "MACDh_" in c][0]
-      df["Norm_MACDh"] = macd_df[col_macdh] / df["Close"]
-    else:
-      df["Norm_MACDh"] = 0
+    df["Norm_MACDh"] = (
+        (macd_df[[c for c in macd_df.columns if "MACDh_" in c][0]] / df["Close"])
+        if macd_df is not None
+        else 0
+    )
 
     bb_df = df.ta.bbands(length=20, std=2)
-    if bb_df is not None:
-      col_bbp = [c for c in bb_df.columns if "BBP_" in c][0]
-      df["BBP_20"] = bb_df[col_bbp]
-    else:
-      df["BBP_20"] = 0.5
+    df["BBP_20"] = (
+        bb_df[[c for c in bb_df.columns if "BBP_" in c][0]]
+        if bb_df is not None
+        else 0.5
+    )
 
     res_obv = df.ta.obv()
     df["OBV"] = (
@@ -350,10 +344,10 @@ def run_backtest_on_ticker(ticker):
     df["Return_Lag2"] = df["Return_Interval"].shift(2)
 
     res_rsi = df.ta.rsi(length=14)
-    df["RSI_14"] = (
-        res_rsi if isinstance(res_rsi, pd.Series) else res_rsi.iloc[:, 0]
+    df["RSI_14_Norm"] = (
+        (res_rsi if isinstance(res_rsi, pd.Series) else res_rsi.iloc[:, 0])
+        / 100.0
     )
-    df["RSI_14_Norm"] = df["RSI_14"] / 100.0
     df["Rolling_Volatility_14"] = df["Return_Interval"].rolling(14).std()
     df["Turnover_5D"] = (df["Close"] * df["Volume"]).rolling(5).mean()
 
@@ -373,6 +367,7 @@ def run_backtest_on_ticker(ticker):
         "BBP_20",
         "RSI_14_Norm",
         "Rolling_Volatility_14",
+        "IHSG_Bullish",
     ]
 
     # Split Data (70% Train / 30% Test Out-of-Sample)
@@ -391,20 +386,20 @@ def run_backtest_on_ticker(ticker):
     X_test = test_data[fitur]
 
     model = HistGradientBoostingClassifier(
-        max_iter=100,
+        max_iter=80,
         max_depth=3,
-        learning_rate=0.03,
-        l2_regularization=3.0,
+        learning_rate=0.04,
+        l2_regularization=2.0,
         random_state=42,
     )
     model.fit(X_train, y_train)
 
     test_data["Prob_Naik"] = model.predict_proba(X_test)[:, 1]
 
-    # Filter AI: Ambil Top 25% Sinyal Terkuat (Quantile 0.75)
-    prob_cutoff = test_data["Prob_Naik"].quantile(0.75)
+    # Ambil Top 40% Sinyal Terkuat dari AI (Quantile 0.60)
+    prob_cutoff = test_data["Prob_Naik"].quantile(0.60)
 
-    # Eksekusi Trading
+    # Eksekusi Trading Engine
     in_trade = False
     entry_price = 0
     tp_price = 0
@@ -424,8 +419,7 @@ def run_backtest_on_ticker(ticker):
         curr_close = test_data.iloc[i + 1]["Close"]
 
         max_price_seen = max(max_price_seen, curr_high)
-        # Trailing SL lebih longgar (1.5x ATR) agar tidak gampang terkena noise
-        trailing_sl = max_price_seen - (1.5 * atr_at_entry)
+        trailing_sl = max_price_seen - (1.4 * atr_at_entry)
         effective_sl = max(sl_price, trailing_sl)
 
         exit_price = None
@@ -458,25 +452,18 @@ def run_backtest_on_ticker(ticker):
           days_in_trade = 0
 
       else:
-        # ATURAN ENTRY V13.1:
-        # 1. Macro Filter: IHSG > SMA50
-        # 2. Medium-Term Trend: Close > SMA50 DAN SMA20 > SMA50
-        # 3. Price Breakout: Close >= Level Tertinggi 5 Hari Lalu
-        # 4. Volume Surge: Volume >= 1.15x Volume SMA20
-        # 5. Top AI Sinyal: Prob_Naik >= Quantile 0.75
-        is_ihsg_bull = row["IHSG_Bullish"] == 1
-        is_trend_ok = (row["Close"] > row["SMA_50"]) and (
-            row["SMA_20"] > row["SMA_50"]
-        )
-        is_breakout = row["Close"] >= row["High_5D_Max"]
-        is_volume_ok = row["Volume"] >= (1.15 * row["Vol_SMA20"])
+        # ATURAN ENTRY V13.2:
+        # 1. Price > SMA 20 (Short-term Momentum)
+        # 2. Volume > Vol SMA 20 (Akumulasi Aktif)
+        # 3. AI Probability Top 40%
+        is_trend_ok = row["Close"] > row["SMA_20"]
+        is_volume_ok = row["Volume"] > row["Vol_SMA20"]
+        is_ai_ok = row["Prob_Naik"] >= prob_cutoff
 
         if (
-            is_ihsg_bull
-            and is_trend_ok
-            and is_breakout
+            is_trend_ok
             and is_volume_ok
-            and row["Prob_Naik"] >= prob_cutoff
+            and is_ai_ok
             and row["Turnover_5D"] >= MIN_TURNOVER
             and row["Close"] >= MIN_PRICE
         ):
@@ -485,8 +472,8 @@ def run_backtest_on_ticker(ticker):
           atr_at_entry = row["ATR_Raw"]
           max_price_seen = entry_price
 
-          # RASIO RISK-REWARD 2.3 : 1 (TP 2.8x ATR vs SL 1.2x ATR)
-          tp_price = entry_price + (2.8 * atr_at_entry)
+          # RASIO RISK-REWARD 2:1 (TP 2.4x ATR vs SL 1.2x ATR)
+          tp_price = entry_price + (2.4 * atr_at_entry)
           sl_price = entry_price - (1.2 * atr_at_entry)
           entry_date = test_data.index[i + 1]
           days_in_trade = 0
@@ -503,15 +490,12 @@ for idx, symbol in enumerate(IHSG_ALPHA_BASKET):
   run_backtest_on_ticker(symbol)
 
 print(
-    "\n\n📊 ================= EVALUASI KINERJA BACKTEST V13.1 ================="
+    "\n\n📊 ================= EVALUASI KINERJA BACKTEST V13.2 ================="
 )
 trades_df = pd.DataFrame(all_trades)
 
 if trades_df.empty:
-  print(
-      "🚨 Tidak ada sinyal yang memenuhi kriteria filter. Coba kurangi"
-      " ketatnya filter."
-  )
+  print("🚨 Tidak ada sinyal yang memenuhi kriteria filter.")
 else:
   total_trades = len(trades_df)
   wins = trades_df[trades_df["PnL_Pct"] > 0]

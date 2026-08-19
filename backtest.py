@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. ENSEMBLE CLASSIFIER V23.0 (REGULARIZED)
+# 1. ENSEMBLE CLASSIFIER V24.0
 # ==========================================
 class EnsembleClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, n_estimators=100, random_state=42):
@@ -18,14 +18,14 @@ class EnsembleClassifier(BaseEstimator, ClassifierMixin):
         
         self.model_hgb = HistGradientBoostingClassifier(
             class_weight='balanced',
-            l2_regularization=1.5,
-            min_samples_leaf=30,
+            l2_regularization=1.0,
+            min_samples_leaf=20,
             random_state=self.random_state
         )
         self.model_rf = RandomForestClassifier(
             n_estimators=self.n_estimators, 
             max_depth=7, 
-            min_samples_leaf=20,
+            min_samples_leaf=15,
             class_weight='balanced', 
             random_state=self.random_state
         )
@@ -43,15 +43,15 @@ class EnsembleClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X):
         proba = self.predict_proba(X)
-        return (proba[:, 1] >= 0.52).astype(int)
+        return (proba[:, 1] >= 0.505).astype(int)
 
 # ==========================================
-# 2. FEATURE ENGINEERING V23.0
+# 2. FEATURE ENGINEERING V24.0 (OPTIMIZED SIGNAL GENERATION)
 # ==========================================
 def calculate_indicators(df):
     df = df.copy()
     
-    # ATR (14) & Relative ATR
+    # ATR (14) & Relative Volatility
     high_low = df['High'] - df['Low']
     high_cp = np.abs(df['High'] - df['Close'].shift(1))
     low_cp = np.abs(df['Low'] - df['Close'].shift(1))
@@ -59,25 +59,28 @@ def calculate_indicators(df):
     df['ATR'] = tr.rolling(14).mean()
     df['ATR_Pct'] = df['ATR'] / (df['Close'] + 1e-9)
     
-    # Moving Averages (50 & 200 Days)
+    # Trend & Distance Dynamics
     df['SMA_50'] = df['Close'].rolling(50).mean()
     df['SMA_200'] = df['Close'].rolling(200).mean()
     df['Dist_SMA50'] = (df['Close'] - df['SMA_50']) / (df['SMA_50'] + 1e-9)
     df['Dist_SMA200'] = (df['Close'] - df['SMA_200']) / (df['SMA_200'] + 1e-9)
     
-    # Momentum & Rate of Change (Menggantikan Trend Filter Biner)
+    # Breakout & Momentum
     df['High_20'] = df['High'].rolling(20).max()
     df['High_20_Ratio'] = (df['Close'] - df['High_20']) / (df['High_20'] + 1e-9)
     df['ROC_20'] = (df['Close'] - df['Close'].shift(20)) / (df['Close'].shift(20) + 1e-9)
     
-    # Volume Dynamics & Liquidity
+    # Volume Z-Score (Menggantikan Vol_Ratio sederhana)
     df['Vol_SMA20'] = df['Volume'].rolling(20).mean()
-    df['Vol_Ratio'] = df['Volume'] / (df['Vol_SMA20'] + 1e-9)
+    df['Vol_STD20'] = df['Volume'].rolling(20).std()
+    df['Vol_ZScore'] = (df['Volume'] - df['Vol_SMA20']) / (df['Vol_STD20'] + 1e-9)
+    
+    # Turnover Liquidity Filter
     df['Turnover_20MA'] = (df['Close'] * df['Volume']).rolling(20).mean()
     
     return df
 
-def apply_triple_barrier(df, hold_days=12, tp_mult=2.5, sl_mult=1.5):
+def apply_triple_barrier(df, hold_days=10, tp_mult=2.4, sl_mult=1.3):
     labels = np.zeros(len(df))
     close = df['Close'].values
     high = df['High'].values
@@ -110,24 +113,27 @@ def apply_triple_barrier(df, hold_days=12, tp_mult=2.5, sl_mult=1.5):
     return df
 
 # ==========================================
-# 3. BACKTEST ENGINE V23.0
+# 3. BACKTEST ENGINE V24.0
 # ==========================================
-class QuantBacktesterV23:
+class QuantBacktesterV24:
     def __init__(self, tickers, start_date, end_date, initial_capital=100_000_000):
         self.tickers = tickers
         self.start_date = start_date
         self.end_date = end_date
         self.capital = initial_capital
         
-        self.prob_threshold = 0.52
-        self.max_hold_days = 12
-        self.sl_atr_mult = 1.5
-        self.tp_atr_mult = 2.5
+        # Operational Hyperparameters V24.0
+        self.prob_threshold = 0.505
+        self.max_hold_days = 10
+        self.sl_atr_mult = 1.3
+        self.tp_atr_mult = 2.4
+        self.max_positions = 8       # Dinaikkan dari 4 ke 8 untuk menangani skala basket besar
+        self.max_daily_entries = 3  # Dinaikkan dari 2 ke 3 entry/hari
         
     def prepare_data(self):
-        print("📥 Downloading Data & Engineering Features (V23.0 Re-tuned)...")
+        print("📥 Downloading Data & Engineering Features (V24.0)...")
         self.data = {}
-        feature_cols = ['Dist_SMA50', 'Dist_SMA200', 'Vol_Ratio', 'ATR_Pct', 'High_20_Ratio', 'ROC_20']
+        feature_cols = ['Dist_SMA50', 'Dist_SMA200', 'Vol_ZScore', 'ATR_Pct', 'High_20_Ratio', 'ROC_20']
         
         for t in self.tickers:
             df = yf.download(t, start=self.start_date, end=self.end_date, progress=False)
@@ -140,8 +146,8 @@ class QuantBacktesterV23:
             df = apply_triple_barrier(df, hold_days=self.max_hold_days, 
                                      tp_mult=self.tp_atr_mult, sl_mult=self.sl_atr_mult)
             
-            # Liquidity Filter (Turnover > 500 Juta, Harga >= 50)
-            df = df[(df['Turnover_20MA'] >= 500_000_000) & (df['Close'] >= 50)]
+            # Liquidity & Safety Filter
+            df = df[(df['Turnover_20MA'] >= 300_000_000) & (df['Close'] >= 50)]
             df = df.dropna(subset=feature_cols + ['Target', 'ATR'])
             
             if len(df) > 50:
@@ -162,11 +168,11 @@ class QuantBacktesterV23:
         X_train = full_train[self.feature_cols]
         y_train = full_train['Target']
         
-        print(f"🤖 Pelatihan Balanced Ensemble Model V23.0 pada {len(X_train)} baris sampel...")
+        print(f"🤖 Pelatihan Balanced Ensemble Model V24.0 pada {len(X_train)} baris sampel...")
         model = EnsembleClassifier(n_estimators=100)
         model.fit(X_train, y_train)
         
-        print("⚙️ Menjalankan Simulasi Backtest V23.0...")
+        print("⚙️ Menjalankan Simulasi Backtest V24.0...")
         
         all_dates = sorted(list(set.union(*[set(df.index) for df in test_dfs.values()])))
         
@@ -175,7 +181,7 @@ class QuantBacktesterV23:
         trades_history = []
         
         for current_date in all_dates:
-            # 1. Evaluasi Posisi Terbuka
+            # 1. Evaluasi Posisi Aktif
             active_tickers = list(portfolio['positions'].keys())
             for t in active_tickers:
                 pos = portfolio['positions'][t]
@@ -205,7 +211,7 @@ class QuantBacktesterV23:
                     })
                     del portfolio['positions'][t]
 
-            # 2. Generasi Sinyal & Eksekusi Entry Baru
+            # 2. Generasi Sinyal & Eksekusi Entry
             daily_signals = []
             for t, df_t in test_dfs.items():
                 if t in portfolio['positions'] or current_date not in df_t.index:
@@ -218,10 +224,10 @@ class QuantBacktesterV23:
                     daily_signals.append((t, prob, row['Close'].values[0], row['ATR'].values[0]))
             
             daily_signals.sort(key=lambda x: x[1], reverse=True)
-            top_targets = daily_signals[:2]
+            top_targets = daily_signals[:self.max_daily_entries]
             
             for t, prob, price, atr in top_targets:
-                if len(portfolio['positions']) >= 4:
+                if len(portfolio['positions']) >= self.max_positions:
                     break
                     
                 risk_amount = portfolio['cash'] * 0.02
@@ -267,7 +273,7 @@ class QuantBacktesterV23:
         max_dd = dd.min() * 100
         
         print("\n==================================================")
-        print("📊 STATISTIK HASIL BACKTEST V23.0")
+        print("📊 STATISTIK HASIL BACKTEST V24.0")
         print("==================================================")
         print(f"Total Eksekusi Signal           : {len(df_trades)} Transaksi")
         print(f"Win Rate                        : {win_rate:.2f}% ({len(wins)} Win / {len(losses)} Loss)")
@@ -346,7 +352,7 @@ if __name__ == '__main__':
         "PYFA.JK", "INRU.JK", "SUNI.JK", "TOBA.JK", "BFIN.JK"
     ]
     
-    engine = QuantBacktesterV23(
+    engine = QuantBacktesterV24(
         tickers=idx_basket,
         start_date="2022-01-01",
         end_date="2026-01-01",

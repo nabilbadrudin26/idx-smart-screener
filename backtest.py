@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. ENSEMBLE CLASSIFIER V27.0
+# 1. ENSEMBLE CLASSIFIER V28.0
 # ==========================================
 class EnsembleClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, n_estimators=100, random_state=42):
@@ -43,10 +43,10 @@ class EnsembleClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X):
         proba = self.predict_proba(X)
-        return (proba[:, 1] >= 0.515).astype(int)
+        return (proba[:, 1] >= 0.520).astype(int)
 
 # ==========================================
-# 2. FEATURE ENGINEERING V27.0
+# 2. FEATURE ENGINEERING V28.0
 # ==========================================
 def calculate_indicators(df):
     df = df.copy()
@@ -112,9 +112,9 @@ def apply_triple_barrier(df, hold_days=10, tp_mult=2.6, sl_mult=1.5):
     return df
 
 # ==========================================
-# 3. BACKTEST ENGINE V27.0 (MOC + REAL FRICTION)
+# 3. BACKTEST ENGINE V28.0 (MARKET REGIME FILTER)
 # ==========================================
-class QuantBacktesterV27:
+class QuantBacktesterV28:
     def __init__(self, tickers, start_date, end_date, initial_capital=100_000_000):
         self.tickers = tickers
         self.start_date = start_date
@@ -122,7 +122,7 @@ class QuantBacktesterV27:
         self.capital = initial_capital
         
         # Operational Parameters
-        self.prob_threshold = 0.515
+        self.prob_threshold = 0.520  # Ambang presisi lebih tinggi
         self.max_hold_days = 10
         self.sl_atr_mult = 1.5
         self.tp_atr_mult = 2.6
@@ -134,9 +134,21 @@ class QuantBacktesterV27:
         self.fee_buy = 0.0015   # 0.15% Broker Fee Beli
         self.fee_sell = 0.0025  # 0.25% Broker Fee + Tax Jual
         self.slippage = 0.001   # 0.10% Slippage
-        
+
+    def _prepare_ihsg_regime(self):
+        print("Mengunduh Data IHSG (^JKSE) untuk Market Regime Filter...")
+        ihsg = yf.download("^JKSE", start=self.start_date, end=self.end_date, progress=False)
+        if isinstance(ihsg.columns, pd.MultiIndex):
+            ihsg.columns = ihsg.columns.get_level_values(0)
+            
+        ihsg['SMA50'] = ihsg['Close'].rolling(50).mean()
+        # True jika IHSG dalam kondisi Bullish Trend (Close > SMA50)
+        ihsg['Is_Bullish'] = ihsg['Close'] > ihsg['SMA50']
+        self.ihsg_regime = ihsg['Is_Bullish'].to_dict()
+
     def prepare_data(self):
-        print("📥 Downloading Data & Engineering Features (V27.0 MOC Friction Test)...")
+        self._prepare_ihsg_regime()
+        print("📥 Downloading Data & Engineering Features (V28.0 Macro Regime Protection)...")
         self.data = {}
         feature_cols = ['Dist_SMA50', 'Dist_SMA200', 'Vol_ZScore', 'ATR_Pct', 'High_20_Ratio']
         
@@ -172,11 +184,11 @@ class QuantBacktesterV27:
         X_train = full_train[self.feature_cols]
         y_train = full_train['Target']
         
-        print(f"🤖 Pelatihan Balanced Ensemble Model V27.0 pada {len(X_train)} baris sampel...")
+        print(f"Pelatihan Balanced Ensemble Model V28.0 pada {len(X_train)} baris sampel...")
         model = EnsembleClassifier(n_estimators=100)
         model.fit(X_train, y_train)
         
-        print("⚙️ Menjalankan Simulasi Backtest V27.0 (MOC Execution + Fee/Slippage)...")
+        print("Menjalankan Simulasi Backtest V28.0 (With IHSG Regime Filter)...")
         
         all_dates = sorted(list(set.union(*[set(df.index) for df in test_dfs.values()])))
         
@@ -226,44 +238,47 @@ class QuantBacktesterV27:
                     })
                     del portfolio['positions'][t]
 
-            # 2. Generasi Sinyal & Eksekusi MOC (Market On Close H+0)
-            daily_signals = []
-            for t, df_t in test_dfs.items():
-                if t in portfolio['positions'] or current_date not in df_t.index:
-                    continue
-                    
-                row = df_t.loc[[current_date]]
-                prob = model.predict_proba(row[self.feature_cols])[0][1]
-                
-                if prob >= self.prob_threshold:
-                    daily_signals.append((t, prob, row['Close'].values[0], row['ATR'].values[0]))
+            # 2. Generasi Sinyal & Eksekusi MOC (HANYA JIKA IHSG BULLISH)
+            is_ihsg_bullish = self.ihsg_regime.get(current_date, True)
             
-            daily_signals.sort(key=lambda x: x[1], reverse=True)
-            top_targets = daily_signals[:self.max_daily_entries]
-            
-            for t, prob, price, atr in top_targets:
-                if len(portfolio['positions']) >= self.max_positions:
-                    break
+            if is_ihsg_bullish:
+                daily_signals = []
+                for t, df_t in test_dfs.items():
+                    if t in portfolio['positions'] or current_date not in df_t.index:
+                        continue
+                        
+                    row = df_t.loc[[current_date]]
+                    prob = model.predict_proba(row[self.feature_cols])[0][1]
                     
-                exec_price = price * (1 + self.slippage)
-                risk_amount = portfolio['cash'] * self.risk_per_trade
-                sl_distance = self.sl_atr_mult * atr
-                shares = int(risk_amount / sl_distance) if sl_distance > 0 else 0
+                    if prob >= self.prob_threshold:
+                        daily_signals.append((t, prob, row['Close'].values[0], row['ATR'].values[0]))
                 
-                cost = shares * exec_price
-                cost_with_fee = cost * (1 + self.fee_buy)
+                daily_signals.sort(key=lambda x: x[1], reverse=True)
+                top_targets = daily_signals[:self.max_daily_entries]
                 
-                if shares > 0 and cost_with_fee <= portfolio['cash']:
-                    portfolio['cash'] -= cost_with_fee
-                    portfolio['positions'][t] = {
-                        'entry_price': exec_price,
-                        'shares': shares,
-                        'entry_date': current_date,
-                        'sl': exec_price - sl_distance,
-                        'tp': exec_price + (self.tp_atr_mult * atr),
-                        'highest_price': exec_price,
-                        'atr': atr
-                    }
+                for t, prob, price, atr in top_targets:
+                    if len(portfolio['positions']) >= self.max_positions:
+                        break
+                        
+                    exec_price = price * (1 + self.slippage)
+                    risk_amount = portfolio['cash'] * self.risk_per_trade
+                    sl_distance = self.sl_atr_mult * atr
+                    shares = int(risk_amount / sl_distance) if sl_distance > 0 else 0
+                    
+                    cost = shares * exec_price
+                    cost_with_fee = cost * (1 + self.fee_buy)
+                    
+                    if shares > 0 and cost_with_fee <= portfolio['cash']:
+                        portfolio['cash'] -= cost_with_fee
+                        portfolio['positions'][t] = {
+                            'entry_price': exec_price,
+                            'shares': shares,
+                            'entry_date': current_date,
+                            'sl': exec_price - sl_distance,
+                            'tp': exec_price + (self.tp_atr_mult * atr),
+                            'highest_price': exec_price,
+                            'atr': atr
+                        }
 
             total_equity = portfolio['cash']
             for t, pos in portfolio['positions'].items():
@@ -293,7 +308,7 @@ class QuantBacktesterV27:
         max_dd = dd.min() * 100
         
         print("\n==================================================")
-        print("📊 STATISTIK HASIL BACKTEST V27.0 (MOC FRICTION TEST)")
+        print("STATISTIK HASIL BACKTEST V28.0 (REGIME PROTECTED)")
         print("==================================================")
         print(f"Total Eksekusi Signal           : {len(df_trades)} Transaksi")
         print(f"Win Rate                        : {win_rate:.2f}% ({len(wins)} Win / {len(losses)} Loss)")
@@ -303,7 +318,7 @@ class QuantBacktesterV27:
         print(f"Ekuitas Akhir                   : Rp {equity[-1]:,.0f}")
         print("==================================================")
         
-        print("\n📌 FEATURE IMPORTANCE (Permutation Importance):")
+        print("\nFEATURE IMPORTANCE (Permutation Importance):")
         perm = permutation_importance(model, X, y, n_repeats=5, random_state=42)
         for i in perm.importances_mean.argsort()[::-1]:
             print(f"- {self.feature_cols[i]:<15}: {perm.importances_mean[i]:.4f}")
@@ -372,7 +387,7 @@ if __name__ == '__main__':
         "PYFA.JK", "INRU.JK", "TOBA.JK", "BFIN.JK", "CITA.JK"
     ]
     
-    engine = QuantBacktesterV27(
+    engine = QuantBacktesterV28(
         tickers=idx_basket,
         start_date="2022-01-01",
         end_date="2026-01-01",

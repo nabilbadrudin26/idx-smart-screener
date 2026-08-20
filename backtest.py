@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. ENSEMBLE CLASSIFIER V25.0
+# 1. ENSEMBLE CLASSIFIER V26.0
 # ==========================================
 class EnsembleClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, n_estimators=100, random_state=42):
@@ -46,7 +46,7 @@ class EnsembleClassifier(BaseEstimator, ClassifierMixin):
         return (proba[:, 1] >= 0.505).astype(int)
 
 # ==========================================
-# 2. FEATURE ENGINEERING V25.0
+# 2. FEATURE ENGINEERING V26.0 (PRUNED)
 # ==========================================
 def calculate_indicators(df):
     df = df.copy()
@@ -59,22 +59,15 @@ def calculate_indicators(df):
     df['ATR'] = tr.rolling(14).mean()
     df['ATR_Pct'] = df['ATR'] / (df['Close'] + 1e-9)
     
-    # Trend Dynamics
+    # Moving Averages
     df['SMA_50'] = df['Close'].rolling(50).mean()
     df['SMA_200'] = df['Close'].rolling(200).mean()
     df['Dist_SMA50'] = (df['Close'] - df['SMA_50']) / (df['SMA_50'] + 1e-9)
     df['Dist_SMA200'] = (df['Close'] - df['SMA_200']) / (df['SMA_200'] + 1e-9)
     
-    # Breakout & Normalized RSI
+    # Breakout Ratio
     df['High_20'] = df['High'].rolling(20).max()
     df['High_20_Ratio'] = (df['Close'] - df['High_20']) / (df['High_20'] + 1e-9)
-    
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / (loss + 1e-9)
-    rsi = 100 - (100 / (1 + rs))
-    df['RSI_Norm'] = (rsi - 50.0) / 50.0  # Scale between -1 and 1
     
     # Volume Z-Score
     df['Vol_SMA20'] = df['Volume'].rolling(20).mean()
@@ -119,28 +112,34 @@ def apply_triple_barrier(df, hold_days=10, tp_mult=2.4, sl_mult=1.3):
     return df
 
 # ==========================================
-# 3. BACKTEST ENGINE V25.0 (WITH DYNAMIC TRAILING STOP)
+# 3. BACKTEST ENGINE V26.0 (REAL-WORLD FRICTION)
 # ==========================================
-class QuantBacktesterV25:
+class QuantBacktesterV26:
     def __init__(self, tickers, start_date, end_date, initial_capital=100_000_000):
         self.tickers = tickers
         self.start_date = start_date
         self.end_date = end_date
         self.capital = initial_capital
         
-        # Hyperparameters V25.0
+        # Hyperparameters
         self.prob_threshold = 0.505
         self.max_hold_days = 10
         self.sl_atr_mult = 1.3
         self.tp_atr_mult = 2.4
         self.max_positions = 8
         self.max_daily_entries = 3
-        self.risk_per_trade = 0.015  # Terkalibrasi ke 1.5%
+        self.risk_per_trade = 0.015
+        
+        # Real-world Market Friction
+        self.fee_buy = 0.0015   # 0.15% Fee Beli Broker
+        self.fee_sell = 0.0025  # 0.25% Fee Jual + Pajak
+        self.slippage = 0.001   # 0.10% Estimasi Slippage
         
     def prepare_data(self):
-        print("Downloading Data & Engineering Features (V25.0)...")
+        print("Downloading Data & Engineering Features (V26.0 Real-World Calibration)...")
         self.data = {}
-        feature_cols = ['Dist_SMA50', 'Dist_SMA200', 'Vol_ZScore', 'ATR_Pct', 'High_20_Ratio', 'RSI_Norm']
+        # Feature Set Terbersih (RSI_Norm Dihapus)
+        feature_cols = ['Dist_SMA50', 'Dist_SMA200', 'Vol_ZScore', 'ATR_Pct', 'High_20_Ratio']
         
         for t in self.tickers:
             df = yf.download(t, start=self.start_date, end=self.end_date, progress=False)
@@ -153,7 +152,6 @@ class QuantBacktesterV25:
             df = apply_triple_barrier(df, hold_days=self.max_hold_days, 
                                      tp_mult=self.tp_atr_mult, sl_mult=self.sl_atr_mult)
             
-            # Liquidity & Price Filters
             df = df[(df['Turnover_20MA'] >= 300_000_000) & (df['Close'] >= 50)]
             df = df.dropna(subset=feature_cols + ['Target', 'ATR'])
             
@@ -175,20 +173,48 @@ class QuantBacktesterV25:
         X_train = full_train[self.feature_cols]
         y_train = full_train['Target']
         
-        print(f"Pelatihan Balanced Ensemble Model V25.0 pada {len(X_train)} baris sampel...")
+        print(f"Pelatihan Balanced Ensemble Model V26.0 pada {len(X_train)} baris sampel...")
         model = EnsembleClassifier(n_estimators=100)
         model.fit(X_train, y_train)
         
-        print("Menjalankan Simulasi Backtest V25.0...")
+        print("Menjalankan Simulasi Backtest V26.0 (Dengan Fee & Slippage)...")
         
         all_dates = sorted(list(set.union(*[set(df.index) for df in test_dfs.values()])))
         
         portfolio = {'cash': self.capital, 'positions': {}}
         equity_curve = []
         trades_history = []
+        pending_orders = []
         
         for current_date in all_dates:
-            # 1. Evaluasi Posisi Aktif & Trailing Stop Update
+            # 0. Eksekusi Pending Orders (Entry pada Harga Open H+1)
+            for order in pending_orders[:]:
+                t, price_open, atr = order['ticker'], order['open'], order['atr']
+                if t in portfolio['positions'] or len(portfolio['positions']) >= self.max_positions:
+                    continue
+                    
+                exec_price = price_open * (1 + self.slippage)  # Slippage Beli
+                risk_amount = portfolio['cash'] * self.risk_per_trade
+                sl_distance = self.sl_atr_mult * atr
+                shares = int(risk_amount / sl_distance) if sl_distance > 0 else 0
+                
+                cost = shares * exec_price
+                cost_with_fee = cost * (1 + self.fee_buy)
+                
+                if shares > 0 and cost_with_fee <= portfolio['cash']:
+                    portfolio['cash'] -= cost_with_fee
+                    portfolio['positions'][t] = {
+                        'entry_price': exec_price,
+                        'shares': shares,
+                        'entry_date': current_date,
+                        'sl': exec_price - sl_distance,
+                        'tp': exec_price + (self.tp_atr_mult * atr),
+                        'highest_price': exec_price,
+                        'atr': atr
+                    }
+            pending_orders = []
+
+            # 1. Evaluasi Posisi Aktif
             active_tickers = list(portfolio['positions'].keys())
             for t in active_tickers:
                 pos = portfolio['positions'][t]
@@ -202,7 +228,6 @@ class QuantBacktesterV25:
                 curr_high = row['High']
                 days_held = (current_date - pos['entry_date']).days
                 
-                # Dynamic Trailing Stop Activation (+1.0x ATR profit)
                 pos['highest_price'] = max(pos['highest_price'], curr_high)
                 if (pos['highest_price'] - pos['entry_price']) >= pos['atr']:
                     trailing_sl = pos['highest_price'] - (1.2 * pos['atr'])
@@ -213,19 +238,23 @@ class QuantBacktesterV25:
                 expired = days_held >= self.max_hold_days
                 
                 if hit_sl or hit_tp or expired:
-                    exit_price = pos['sl'] if hit_sl else (pos['tp'] if hit_tp else curr_price)
-                    pnl = (exit_price - pos['entry_price']) * pos['shares']
-                    portfolio['cash'] += pos['shares'] * exit_price
+                    raw_exit = pos['sl'] if hit_sl else (pos['tp'] if hit_tp else curr_price)
+                    exec_exit = raw_exit * (1 - self.slippage)  # Slippage Jual
+                    gross_proceeds = pos['shares'] * exec_exit
+                    net_proceeds = gross_proceeds * (1 - self.fee_sell)
+                    
+                    pnl = net_proceeds - (pos['shares'] * pos['entry_price'] * (1 + self.fee_buy))
+                    portfolio['cash'] += net_proceeds
                     
                     trades_history.append({
                         'ticker': t, 
                         'pnl': pnl, 
-                        'ret': (exit_price / pos['entry_price']) - 1,
+                        'ret': (net_proceeds / (pos['shares'] * pos['entry_price'])) - 1,
                         'reason': 'SL' if hit_sl else ('TP' if hit_tp else 'TIME')
                     })
                     del portfolio['positions'][t]
 
-            # 2. Generasi Sinyal & Eksekusi Entry
+            # 2. Generasi Sinyal (Sinyal H+0, Masuk Antrian Entry H+1)
             daily_signals = []
             for t, df_t in test_dfs.items():
                 if t in portfolio['positions'] or current_date not in df_t.index:
@@ -235,31 +264,18 @@ class QuantBacktesterV25:
                 prob = model.predict_proba(row[self.feature_cols])[0][1]
                 
                 if prob >= self.prob_threshold:
-                    daily_signals.append((t, prob, row['Close'].values[0], row['ATR'].values[0]))
+                    daily_signals.append((t, prob, row['ATR'].values[0]))
             
             daily_signals.sort(key=lambda x: x[1], reverse=True)
             top_targets = daily_signals[:self.max_daily_entries]
             
-            for t, prob, price, atr in top_targets:
-                if len(portfolio['positions']) >= self.max_positions:
-                    break
-                    
-                risk_amount = portfolio['cash'] * self.risk_per_trade
-                sl_distance = self.sl_atr_mult * atr
-                shares = int(risk_amount / sl_distance) if sl_distance > 0 else 0
-                
-                cost = shares * price
-                if shares > 0 and cost <= portfolio['cash']:
-                    portfolio['cash'] -= cost
-                    portfolio['positions'][t] = {
-                        'entry_price': price,
-                        'shares': shares,
-                        'entry_date': current_date,
-                        'sl': price - sl_distance,
-                        'tp': price + (self.tp_atr_mult * atr),
-                        'highest_price': price,
-                        'atr': atr
-                    }
+            # Buat Antrian Order untuk Eksekusi di Open Hari Berikutnya
+            for t, prob, atr in top_targets:
+                df_t = test_dfs[t]
+                curr_idx = df_t.index.get_loc(current_date)
+                if curr_idx + 1 < len(df_t):
+                    next_open = df_t.iloc[curr_idx + 1]['Open']
+                    pending_orders.append({'ticker': t, 'open': next_open, 'atr': atr})
 
             total_equity = portfolio['cash']
             for t, pos in portfolio['positions'].items():
@@ -289,12 +305,12 @@ class QuantBacktesterV25:
         max_dd = dd.min() * 100
         
         print("\n==================================================")
-        print("STATISTIK HASIL BACKTEST V25.0")
+        print("STATISTIK HASIL BACKTEST V26.0 (REAL-WORLD TEST)")
         print("==================================================")
         print(f"Total Eksekusi Signal           : {len(df_trades)} Transaksi")
         print(f"Win Rate                        : {win_rate:.2f}% ({len(wins)} Win / {len(losses)} Loss)")
-        print(f"Profit Factor                   : {profit_factor:.2f}")
-        print(f"Total Return Portofolio         : {total_return:.2f}%")
+        print(f"Profit Factor (Net After Fee)   : {profit_factor:.2f}")
+        print(f"Total Return Portofolio (Net)   : {total_return:.2f}%")
         print(f"Maximum Drawdown (Portofolio)   : {max_dd:.2f}%")
         print(f"Ekuitas Akhir                   : Rp {equity[-1]:,.0f}")
         print("==================================================")
@@ -308,7 +324,6 @@ class QuantBacktesterV25:
 # 4. EKSEKUSI UTAMA (CLEAN BASKET IDX)
 # ==========================================
 if __name__ == '__main__':
-    # Diperbarui: Ticker delisted/bermasalah dihapus & diganti dengan saham aktif
     idx_basket = [
         # --- 100 Saham Utama ---
         "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "TLKM.JK",
@@ -369,7 +384,7 @@ if __name__ == '__main__':
         "PYFA.JK", "INRU.JK", "TOBA.JK", "BFIN.JK", "CITA.JK"
     ]
     
-    engine = QuantBacktesterV25(
+    engine = QuantBacktesterV26(
         tickers=idx_basket,
         start_date="2022-01-01",
         end_date="2026-01-01",

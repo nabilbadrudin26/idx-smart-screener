@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. ENSEMBLE CLASSIFIER V24.0
+# 1. ENSEMBLE CLASSIFIER V25.0
 # ==========================================
 class EnsembleClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, n_estimators=100, random_state=42):
@@ -18,8 +18,8 @@ class EnsembleClassifier(BaseEstimator, ClassifierMixin):
         
         self.model_hgb = HistGradientBoostingClassifier(
             class_weight='balanced',
-            l2_regularization=1.0,
-            min_samples_leaf=20,
+            l2_regularization=1.2,
+            min_samples_leaf=25,
             random_state=self.random_state
         )
         self.model_rf = RandomForestClassifier(
@@ -46,7 +46,7 @@ class EnsembleClassifier(BaseEstimator, ClassifierMixin):
         return (proba[:, 1] >= 0.505).astype(int)
 
 # ==========================================
-# 2. FEATURE ENGINEERING V24.0 (OPTIMIZED SIGNAL GENERATION)
+# 2. FEATURE ENGINEERING V25.0
 # ==========================================
 def calculate_indicators(df):
     df = df.copy()
@@ -59,18 +59,24 @@ def calculate_indicators(df):
     df['ATR'] = tr.rolling(14).mean()
     df['ATR_Pct'] = df['ATR'] / (df['Close'] + 1e-9)
     
-    # Trend & Distance Dynamics
+    # Trend Dynamics
     df['SMA_50'] = df['Close'].rolling(50).mean()
     df['SMA_200'] = df['Close'].rolling(200).mean()
     df['Dist_SMA50'] = (df['Close'] - df['SMA_50']) / (df['SMA_50'] + 1e-9)
     df['Dist_SMA200'] = (df['Close'] - df['SMA_200']) / (df['SMA_200'] + 1e-9)
     
-    # Breakout & Momentum
+    # Breakout & Normalized RSI
     df['High_20'] = df['High'].rolling(20).max()
     df['High_20_Ratio'] = (df['Close'] - df['High_20']) / (df['High_20'] + 1e-9)
-    df['ROC_20'] = (df['Close'] - df['Close'].shift(20)) / (df['Close'].shift(20) + 1e-9)
     
-    # Volume Z-Score (Menggantikan Vol_Ratio sederhana)
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / (loss + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    df['RSI_Norm'] = (rsi - 50.0) / 50.0  # Scale between -1 and 1
+    
+    # Volume Z-Score
     df['Vol_SMA20'] = df['Volume'].rolling(20).mean()
     df['Vol_STD20'] = df['Volume'].rolling(20).std()
     df['Vol_ZScore'] = (df['Volume'] - df['Vol_SMA20']) / (df['Vol_STD20'] + 1e-9)
@@ -113,27 +119,28 @@ def apply_triple_barrier(df, hold_days=10, tp_mult=2.4, sl_mult=1.3):
     return df
 
 # ==========================================
-# 3. BACKTEST ENGINE V24.0
+# 3. BACKTEST ENGINE V25.0 (WITH DYNAMIC TRAILING STOP)
 # ==========================================
-class QuantBacktesterV24:
+class QuantBacktesterV25:
     def __init__(self, tickers, start_date, end_date, initial_capital=100_000_000):
         self.tickers = tickers
         self.start_date = start_date
         self.end_date = end_date
         self.capital = initial_capital
         
-        # Operational Hyperparameters V24.0
+        # Hyperparameters V25.0
         self.prob_threshold = 0.505
         self.max_hold_days = 10
         self.sl_atr_mult = 1.3
         self.tp_atr_mult = 2.4
-        self.max_positions = 8       # Dinaikkan dari 4 ke 8 untuk menangani skala basket besar
-        self.max_daily_entries = 3  # Dinaikkan dari 2 ke 3 entry/hari
+        self.max_positions = 8
+        self.max_daily_entries = 3
+        self.risk_per_trade = 0.015  # Terkalibrasi ke 1.5%
         
     def prepare_data(self):
-        print("📥 Downloading Data & Engineering Features (V24.0)...")
+        print("Downloading Data & Engineering Features (V25.0)...")
         self.data = {}
-        feature_cols = ['Dist_SMA50', 'Dist_SMA200', 'Vol_ZScore', 'ATR_Pct', 'High_20_Ratio', 'ROC_20']
+        feature_cols = ['Dist_SMA50', 'Dist_SMA200', 'Vol_ZScore', 'ATR_Pct', 'High_20_Ratio', 'RSI_Norm']
         
         for t in self.tickers:
             df = yf.download(t, start=self.start_date, end=self.end_date, progress=False)
@@ -146,7 +153,7 @@ class QuantBacktesterV24:
             df = apply_triple_barrier(df, hold_days=self.max_hold_days, 
                                      tp_mult=self.tp_atr_mult, sl_mult=self.sl_atr_mult)
             
-            # Liquidity & Safety Filter
+            # Liquidity & Price Filters
             df = df[(df['Turnover_20MA'] >= 300_000_000) & (df['Close'] >= 50)]
             df = df.dropna(subset=feature_cols + ['Target', 'ATR'])
             
@@ -168,11 +175,11 @@ class QuantBacktesterV24:
         X_train = full_train[self.feature_cols]
         y_train = full_train['Target']
         
-        print(f"🤖 Pelatihan Balanced Ensemble Model V24.0 pada {len(X_train)} baris sampel...")
+        print(f"Pelatihan Balanced Ensemble Model V25.0 pada {len(X_train)} baris sampel...")
         model = EnsembleClassifier(n_estimators=100)
         model.fit(X_train, y_train)
         
-        print("⚙️ Menjalankan Simulasi Backtest V24.0...")
+        print("Menjalankan Simulasi Backtest V25.0...")
         
         all_dates = sorted(list(set.union(*[set(df.index) for df in test_dfs.values()])))
         
@@ -181,7 +188,7 @@ class QuantBacktesterV24:
         trades_history = []
         
         for current_date in all_dates:
-            # 1. Evaluasi Posisi Aktif
+            # 1. Evaluasi Posisi Aktif & Trailing Stop Update
             active_tickers = list(portfolio['positions'].keys())
             for t in active_tickers:
                 pos = portfolio['positions'][t]
@@ -192,10 +199,17 @@ class QuantBacktesterV24:
                     
                 row = df_t.loc[current_date]
                 curr_price = row['Close']
+                curr_high = row['High']
                 days_held = (current_date - pos['entry_date']).days
                 
+                # Dynamic Trailing Stop Activation (+1.0x ATR profit)
+                pos['highest_price'] = max(pos['highest_price'], curr_high)
+                if (pos['highest_price'] - pos['entry_price']) >= pos['atr']:
+                    trailing_sl = pos['highest_price'] - (1.2 * pos['atr'])
+                    pos['sl'] = max(pos['sl'], trailing_sl)
+                
                 hit_sl = row['Low'] <= pos['sl']
-                hit_tp = row['High'] >= pos['tp']
+                hit_tp = curr_high >= pos['tp']
                 expired = days_held >= self.max_hold_days
                 
                 if hit_sl or hit_tp or expired:
@@ -230,7 +244,7 @@ class QuantBacktesterV24:
                 if len(portfolio['positions']) >= self.max_positions:
                     break
                     
-                risk_amount = portfolio['cash'] * 0.02
+                risk_amount = portfolio['cash'] * self.risk_per_trade
                 sl_distance = self.sl_atr_mult * atr
                 shares = int(risk_amount / sl_distance) if sl_distance > 0 else 0
                 
@@ -242,7 +256,9 @@ class QuantBacktesterV24:
                         'shares': shares,
                         'entry_date': current_date,
                         'sl': price - sl_distance,
-                        'tp': price + (self.tp_atr_mult * atr)
+                        'tp': price + (self.tp_atr_mult * atr),
+                        'highest_price': price,
+                        'atr': atr
                     }
 
             total_equity = portfolio['cash']
@@ -273,7 +289,7 @@ class QuantBacktesterV24:
         max_dd = dd.min() * 100
         
         print("\n==================================================")
-        print("📊 STATISTIK HASIL BACKTEST V24.0")
+        print("STATISTIK HASIL BACKTEST V25.0")
         print("==================================================")
         print(f"Total Eksekusi Signal           : {len(df_trades)} Transaksi")
         print(f"Win Rate                        : {win_rate:.2f}% ({len(wins)} Win / {len(losses)} Loss)")
@@ -283,15 +299,16 @@ class QuantBacktesterV24:
         print(f"Ekuitas Akhir                   : Rp {equity[-1]:,.0f}")
         print("==================================================")
         
-        print("\n📌 FEATURE IMPORTANCE (Permutation Importance):")
+        print("\n FEATURE IMPORTANCE (Permutation Importance):")
         perm = permutation_importance(model, X, y, n_repeats=5, random_state=42)
         for i in perm.importances_mean.argsort()[::-1]:
             print(f"- {self.feature_cols[i]:<15}: {perm.importances_mean[i]:.4f}")
 
 # ==========================================
-# 4. EKSEKUSI UTAMA (250 TIKER IDX)
+# 4. EKSEKUSI UTAMA (CLEAN BASKET IDX)
 # ==========================================
 if __name__ == '__main__':
+    # Diperbarui: Ticker delisted/bermasalah dihapus & diganti dengan saham aktif
     idx_basket = [
         # --- 100 Saham Utama ---
         "BBCA.JK", "BBRI.JK", "BMRI.JK", "BBNI.JK", "TLKM.JK",
@@ -300,7 +317,7 @@ if __name__ == '__main__':
         "BRIS.JK", "KLBF.JK", "MDKA.JK", "ANTM.JK", "INCO.JK",
         "BREN.JK", "PTRO.JK", "TPIA.JK", "BNBR.JK", "ARTO.JK",
         "CDIA.JK", "BUMI.JK", "BRPT.JK", "CUAN.JK", "TOWR.JK",
-        "BLIB.JK", "UNTR.JK", "AALI.JK", "AUTO.JK", "LSIP.JK",
+        "MIDI.JK", "UNTR.JK", "AALI.JK", "AUTO.JK", "LSIP.JK",
         "BSDE.JK", "INKP.JK", "TKIM.JK", "DSSA.JK", "ADMR.JK",
         "LPKR.JK", "SILO.JK", "MLPL.JK", "AMMN.JK", "CPIN.JK",
         "JPFA.JK", "SIDO.JK", "HMSP.JK", "GGRM.JK", "MYOR.JK",
@@ -311,7 +328,7 @@ if __name__ == '__main__':
         "MAPI.JK", "MAPA.JK", "ERAA.JK", "CMRY.JK", "ULTJ.JK",
         "ROTI.JK", "TBIG.JK", "BUKA.JK", "EMTK.JK", "SCMA.JK",
         "MNCN.JK", "SRTG.JK", "MBMA.JK", "NCKL.JK", "PGEO.JK",
-        "KEEN.JK", "PTPP.JK", "WIKA.JK", "ADHI.JK", "WSKT.JK",
+        "KEEN.JK", "PTPP.JK", "WIKA.JK", "ADHI.JK", "DRMA.JK",
         "ENRG.JK", "PNBN.JK", "BBYB.JK", "WIIM.JK", "KAEF.JK",
         "WEGE.JK", "HILL.JK", "SMMA.JK", "ASRI.JK", "LPPF.JK",
 
@@ -325,10 +342,10 @@ if __name__ == '__main__':
         "SOCI.JK", "LEAD.JK", "HOKI.JK", "GOOD.JK", "CLEO.JK",
         "CAMP.JK", "WOOD.JK", "SIMP.JK", "NSSS.JK", "GIAA.JK",
         "SAME.JK", "BMHS.JK", "OMED.JK", "INAF.JK", "PEHA.JK",
-        "CARE.JK", "RALS.JK", "SDRA.JK", "PNLG.JK", "META.JK",
+        "CARE.JK", "RALS.JK", "SDRA.JK", "SMSM.JK", "MLBI.JK",
 
         # --- 50 Saham Tambahan Tahap 2 ---
-        "FREN.JK", "CPRO.JK", "BCAP.JK", "IATA.JK", "ACST.JK",
+        "MBSS.JK", "CPRO.JK", "BCAP.JK", "IATA.JK", "ACST.JK",
         "NRCA.JK", "SSIA.JK", "GWSA.JK", "GPRA.JK", "DART.JK",
         "MTLA.JK", "BVIC.JK", "INPC.JK", "BGTG.JK", "MCOR.JK",
         "CFIN.JK", "BIMA.JK", "VRNA.JK", "BWPT.JK", "GZCO.JK",
@@ -337,22 +354,22 @@ if __name__ == '__main__':
         "MSKY.JK", "KBLI.JK", "KBLM.JK", "VOKS.JK", "BAJA.JK",
         "GDST.JK", "ISSP.JK", "IGAR.JK", "KDSI.JK", "SPMA.JK",
         "TRST.JK", "ALDO.JK", "POLA.JK", "BSBK.JK", "ZATA.JK",
-        "KRYA.JK", "BPFI.JK", "TRAM.JK", "RIMO.JK", "COWL.JK",
+        "KRYA.JK", "BPFI.JK", "PORT.JK", "SHIP.JK", "MAIN.JK",
 
         # --- 50 Saham Tambahan Tahap 3 ---
         "BJBR.JK", "BJTM.JK", "TINS.JK", "SSMS.JK", "TAPG.JK",
         "DSNG.JK", "MARK.JK", "RAJA.JK", "ESSA.JK", "AVIA.JK",
         "TPMA.JK", "ASSA.JK", "MPMX.JK", "GJTL.JK", "IRRA.JK",
         "BSIM.JK", "BNLI.JK", "ANJT.JK", "CSRA.JK", "TBLA.JK",
-        "MAIN.JK", "LPCK.JK", "JRPT.JK", "PNIN.JK", "MRAT.JK",
+        "PSSI.JK", "LPCK.JK", "JRPT.JK", "PNIN.JK", "MRAT.JK",
         "CSAP.JK", "SMMT.JK", "BALI.JK", "MTDL.JK", "STAA.JK",
-        "PSSI.JK", "LION.JK", "TFCO.JK", "TIFA.JK", "TUGU.JK",
-        "SPTO.JK", "BTON.JK", "CASA.JK", "ARNA.JK", "RMKE.JK",
-        "POWR.JK", "ASGR.JK", "SGER.JK", "TEBE.JK", "RAAM.JK",
-        "PYFA.JK", "INRU.JK", "SUNI.JK", "TOBA.JK", "BFIN.JK"
+        "SPTO.JK", "LION.JK", "TFCO.JK", "TIFA.JK", "TUGU.JK",
+        "TEBE.JK", "BTON.JK", "CASA.JK", "ARNA.JK", "RMKE.JK",
+        "POWR.JK", "ASGR.JK", "SGER.JK", "SUNI.JK", "RAAM.JK",
+        "PYFA.JK", "INRU.JK", "TOBA.JK", "BFIN.JK", "CITA.JK"
     ]
     
-    engine = QuantBacktesterV24(
+    engine = QuantBacktesterV25(
         tickers=idx_basket,
         start_date="2022-01-01",
         end_date="2026-01-01",
